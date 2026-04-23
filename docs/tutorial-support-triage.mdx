@@ -16,8 +16,8 @@ and a responder, the question explodes.
 flowchart TD
     Q["User question"] --> P1["plan (round 1)\n(planner prompt)"]
     P1 -->|"decides tool calls"| T1["stripe_lookup\n(MCP)"]
-    P1 -->|""| T2["kb_search\n(MCP)"]
-    P1 -->|""| T3["thread_search\n(MCP)"]
+    P1 --> T2["kb_search\n(MCP)"]
+    P1 --> T3["thread_search\n(MCP)"]
     T1 -->|"charges"| P2["plan (round 2)\n(planner prompt)"]
     T2 -->|"policy"| P2
     T3 -->|"prior threads"| P2
