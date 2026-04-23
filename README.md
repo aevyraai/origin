@@ -3,7 +3,12 @@
 **Why did my agent get that wrong?** Point Origin at your pipeline and a
 rubric; it runs the pipeline, grades it, and tells you which span(s) in
 the pipeline caused the failure — with severity, confidence, and
-reasoning grounded in the actual execution.
+reasoning grounded in the actual execution. You get back a ranked list
+of culprit spans with a one-paragraph summary, ready to hand to Reflex
+for a prompt fix.
+
+Works with any LLM — Claude, OpenAI, OpenRouter, local Ollama or vLLM,
+or any OpenAI-compatible endpoint.
 
 Origin is the diagnosis stage in the [Aevyra](https://aevyra.ai) stack:
 
@@ -66,6 +71,30 @@ print(result.render())
 captured trace with your judge, and invokes the attribution engine —
 all in one call. You get back a ranked list of culprit spans. No
 known-good reference output is required.
+
+`result.render()` prints something like:
+
+```
+Attribution  method=all  score=0.31
+─────────────────────────────────────────────────────────────────────
+Summary: The retrieve span failed to surface the refund policy document,
+leaving the answer span without the grounding it needed. The classify
+span contributed by routing to the wrong topic, narrowing the retrieval
+scope before it even ran.
+
+Culprits
+  1. retrieve       PRIMARY       confidence=0.89
+     Returned generic FAQ results; the refund policy doc was not in the
+     retrieved set despite being present in the index.
+
+  2. classify       CONTRIBUTING  confidence=0.44
+     Classified as "billing/general" rather than "billing/refund",
+     causing the retriever to miss the policy-specific corpus.
+
+  3. answer         MINOR         confidence=0.18
+     Given the missing context, the answer defaulted to a generic
+     apology rather than citing the 30-day refund window.
+```
 
 Don't have a Verdict metric? Pass any `Callable[[AgentTrace], float]`
 as `judge=` — including a lambda that wraps your own evaluator.
