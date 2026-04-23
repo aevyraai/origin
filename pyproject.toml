@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aevyra-origin"
+version = "0.1.0"
+description = "Failure attribution for agent pipelines — given an AgentTrace and a score, Origin finds which node(s) caused the failure."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "Aevyra AI" },
+]
+
+keywords = [
+    "agent", "failure-attribution", "diagnosis", "llm",
+    "evaluation", "observability", "aevyra",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "aevyra-witness>=0.1.0",
+]
+
+[project.optional-dependencies]
+# LLM backend extras — install what you use. Default is Anthropic.
+anthropic = ["anthropic>=0.30"]
+openai    = ["openai>=2.31.0"]
+all       = ["anthropic>=0.30", "openai>=2.31.0"]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.4",
+    "typer>=0.24.1",
+    "anthropic>=0.30",
+    "openai>=2.31.0",
+]
+
+[project.scripts]
+aevyra-origin = "aevyra_origin.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
