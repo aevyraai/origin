@@ -1,5 +1,9 @@
 # aevyra-origin
 
+[![CI](https://github.com/aevyraai/origin/actions/workflows/ci.yml/badge.svg)](https://github.com/aevyraai/origin/actions/workflows/ci.yml)
+[![Security](https://github.com/aevyraai/origin/actions/workflows/security.yml/badge.svg)](https://github.com/aevyraai/origin/actions/workflows/security.yml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 **Why did my agent get that wrong?** Point Origin at your pipeline and a
 rubric; it runs the pipeline, grades it, and tells you which span(s) in
 the pipeline caused the failure — with severity, confidence, and
