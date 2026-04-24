@@ -46,6 +46,14 @@ from typing import Any, Literal
 
 Severity = Literal["primary", "contributing", "minor"]
 
+
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
 VALID_SEVERITIES: tuple[str, ...] = ("primary", "contributing", "minor")
 
 _SEVERITY_RANK = {"primary": 3, "contributing": 2, "minor": 1}
@@ -169,6 +177,10 @@ class Attribution:
     method: str
     score: float
     raw: dict[str, Any] = field(default_factory=dict)
+    llm_tokens: int = 0
+    """Total LLM tokens consumed by the critic and decomposition methods."""
+    ablation_calls: int = 0
+    """Number of runner+judge invocations made during ablation."""
 
     def top_culprit(self) -> NodeAttribution | None:
         """The highest-confidence culprit, or ``None`` if there are none."""
@@ -223,6 +235,8 @@ class Attribution:
             "culprits": [c.to_dict() for c in self.culprits],
             "method": self.method,
             "score": self.score,
+            "llm_tokens": self.llm_tokens,
+            "ablation_calls": self.ablation_calls,
             "raw": self.raw,
         }
 
@@ -237,13 +251,21 @@ class Attribution:
             culprits=[NodeAttribution.from_dict(c) for c in d.get("culprits", [])],
             method=d.get("method", ""),
             score=float(d.get("score", 0.0)),
+            llm_tokens=int(d.get("llm_tokens", 0)),
+            ablation_calls=int(d.get("ablation_calls", 0)),
             raw=dict(d.get("raw", {})),
         )
 
     def render(self) -> str:
         """Human-readable multi-line rendering, suitable for CLI output."""
+        token_parts = []
+        if self.llm_tokens:
+            token_parts.append(f"llm={_fmt_tokens(self.llm_tokens)}")
+        if self.ablation_calls:
+            token_parts.append(f"ablation_calls={self.ablation_calls}")
+        token_str = f"  tokens={', '.join(token_parts)}" if token_parts else ""
         lines = [
-            f"Origin attribution  (method={self.method}, score={self.score:.3f})",
+            f"Origin attribution  (method={self.method}, score={self.score:.3f}{token_str})",
             f"  Summary: {self.summary}",
             "",
         ]

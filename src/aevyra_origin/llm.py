@@ -20,15 +20,25 @@ This module provides convenience factories for the common cases:
     - ``anthropic_llm`` — Claude via the Anthropic SDK (default recommendation)
     - ``openai_llm``    — any OpenAI-compatible endpoint (OpenAI, OpenRouter, Together, vLLM, …)
 
+Both factories return class instances that satisfy the ``LLMFn`` protocol and
+additionally expose a ``tokens_used`` attribute for token accounting::
+
+    llm = anthropic_llm()
+    text = llm("What went wrong?")
+    print(llm.tokens_used)   # total tokens consumed so far
+
 Attribution is a reasoning task that benefits from determinism, so all
 factories default to ``temperature=0.0``. Advanced users can override.
 
-Interop with Reflex:
+Interop with Reflex::
 
     from aevyra_reflex import LLM
     reflex_llm = LLM(model="claude-sonnet-4-5")
-
     origin = Origin(llm=lambda p: reflex_llm.generate(p, temperature=0.0))
+
+    # Note: a plain lambda won't have tokens_used — token accounting only
+    # works with the factories in this module (or any callable that exposes
+    # a ``tokens_used: int`` attribute).
 """
 
 from __future__ import annotations
@@ -36,7 +46,58 @@ from __future__ import annotations
 from typing import Callable
 
 LLMFn = Callable[[str], str]
-"""The minimal LLM interface Origin depends on: a callable mapping prompt → text."""
+"""The minimal LLM interface Origin depends on: a callable mapping prompt → text.
+
+Callables returned by :func:`anthropic_llm` and :func:`openai_llm` additionally
+expose a ``tokens_used: int`` attribute that accumulates across calls. Plain
+lambdas or closures work as ``LLMFn`` but won't contribute to token accounting.
+"""
+
+
+class _AnthropicLLM:
+    """Callable LLM backed by the Anthropic SDK with built-in token tracking."""
+
+    def __init__(self, client: object, model: str, max_tokens: int, temperature: float) -> None:
+        self._client = client
+        self._model = model
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self.tokens_used: int = 0
+
+    def __call__(self, prompt: str) -> str:
+        resp = self._client.messages.create(  # type: ignore[attr-defined]
+            model=self._model,
+            max_tokens=self._max_tokens,
+            temperature=self._temperature,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            self.tokens_used += getattr(usage, "input_tokens", 0) + getattr(usage, "output_tokens", 0)
+        return resp.content[0].text
+
+
+class _OpenAILLM:
+    """Callable LLM backed by any OpenAI-compatible endpoint with built-in token tracking."""
+
+    def __init__(self, client: object, model: str, max_tokens: int, temperature: float) -> None:
+        self._client = client
+        self._model = model
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self.tokens_used: int = 0
+
+    def __call__(self, prompt: str) -> str:
+        resp = self._client.chat.completions.create(  # type: ignore[attr-defined]
+            model=self._model,
+            max_tokens=self._max_tokens,
+            temperature=self._temperature,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            self.tokens_used += getattr(usage, "prompt_tokens", 0) + getattr(usage, "completion_tokens", 0)
+        return resp.choices[0].message.content or ""
 
 
 def anthropic_llm(
@@ -45,7 +106,7 @@ def anthropic_llm(
     api_key: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.0,
-) -> LLMFn:
+) -> _AnthropicLLM:
     """Factory: Claude via the Anthropic Python SDK.
 
     Requires the ``anthropic`` extra::
@@ -62,7 +123,8 @@ def anthropic_llm(
                      across reruns matters more than variety.
 
     Returns:
-        A callable ``(prompt: str) -> str`` suitable for ``Origin(llm=...)``.
+        A callable ``(prompt: str) -> str`` with a ``tokens_used`` attribute.
+        Satisfies :data:`LLMFn`.
     """
     try:
         from anthropic import Anthropic
@@ -73,17 +135,7 @@ def anthropic_llm(
         ) from e
 
     client = Anthropic(api_key=api_key) if api_key else Anthropic()
-
-    def call(prompt: str) -> str:
-        resp = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.content[0].text
-
-    return call
+    return _AnthropicLLM(client, model, max_tokens, temperature)
 
 
 def openai_llm(
@@ -93,7 +145,7 @@ def openai_llm(
     base_url: str | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.0,
-) -> LLMFn:
+) -> _OpenAILLM:
     """Factory: any OpenAI-compatible endpoint.
 
     Works with OpenAI, OpenRouter, Together, Groq, DeepInfra, Ollama's
@@ -112,6 +164,10 @@ def openai_llm(
                      or ``"http://localhost:11434/v1"`` for Ollama).
         max_tokens:  Max output tokens per call.
         temperature: Sampling temperature. Defaults to 0.0.
+
+    Returns:
+        A callable ``(prompt: str) -> str`` with a ``tokens_used`` attribute.
+        Satisfies :data:`LLMFn`.
     """
     try:
         from openai import OpenAI
@@ -127,17 +183,7 @@ def openai_llm(
     if base_url is not None:
         kwargs["base_url"] = base_url
     client = OpenAI(**kwargs)
-
-    def call(prompt: str) -> str:
-        resp = client.chat.completions.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.choices[0].message.content or ""
-
-    return call
+    return _OpenAILLM(client, model, max_tokens, temperature)
 
 
 __all__ = ["LLMFn", "anthropic_llm", "openai_llm"]
