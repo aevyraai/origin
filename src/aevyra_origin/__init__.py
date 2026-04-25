@@ -54,14 +54,18 @@ from aevyra_origin.result import (
     PromptAttribution,
     VALID_SEVERITIES,
 )
+from aevyra_origin.run_store import CheckpointState, DiagnoseRun, DiagnoseStore
 
 __version__ = "0.1.0"
 
 __all__ = [
     "AblationError",
     "Attribution",
+    "CheckpointState",
     "CriticError",
     "DecompositionError",
+    "DiagnoseRun",
+    "DiagnoseStore",
     "Judge",
     "NodeAttribution",
     "Origin",

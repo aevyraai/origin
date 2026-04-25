@@ -26,8 +26,40 @@
                            participates only when ``runner`` and ``judge``
                            were provided to ``Origin``.
 
-There is also a module-level ``diagnose()`` convenience function for
-one-shot usage that doesn't need to hold onto an ``Origin`` instance.
+Token accounting
+----------------
+
+When using :func:`anthropic_llm` or :func:`openai_llm` from
+:mod:`aevyra_origin.llm`, the returned LLM callable exposes a
+``tokens_used`` attribute that is read before and after each attribution
+method call. The per-method deltas are summed into
+:attr:`Attribution.llm_tokens`. Ablation's runner+judge invocations are
+counted separately in :attr:`Attribution.ablation_calls`.
+
+Plain lambdas or closures passed as ``llm=`` will work correctly but
+won't contribute to token accounting (``tokens_used`` will stay 0).
+
+Resume
+------
+
+Pass a :class:`~aevyra_origin.run_store.DiagnoseRun` as ``run=`` to enable
+checkpointing. After each method completes, Origin writes a checkpoint to
+the run directory. If the process is interrupted (e.g. during a long ablation
+sweep), restart with the same ``DiagnoseRun`` and Origin will skip the methods
+that already finished::
+
+    store = DiagnoseStore()
+
+    # First call — interrupted mid-ablation
+    run = store.new_run()
+    try:
+        result = origin.diagnose(trace=t, score=0.4, rubric=r, run=run)
+    except KeyboardInterrupt:
+        pass
+
+    # Resume — critic and decomposition are skipped, ablation continues
+    run = store.find_incomplete_run()
+    result = origin.diagnose(trace=t, score=0.4, rubric=r, run=run)
 """
 
 from __future__ import annotations
@@ -49,6 +81,51 @@ Method = Literal["critic", "decomposition", "ablation", "all"]
 VALID_METHODS: tuple[str, ...] = ("critic", "decomposition", "ablation", "all")
 
 
+# ---------------------------------------------------------------------------
+# Checkpoint serialization helpers
+# ---------------------------------------------------------------------------
+
+
+def _serialize_out(out: dict[str, Any]) -> dict[str, Any]:
+    """Make a method output dict JSON-serializable.
+
+    ``run_critic`` and ``run_decomposition`` embed ``NodeAttribution`` objects
+    in their ``"culprits"`` key. This replaces them with plain dicts so the
+    checkpoint can be written as JSON.
+    """
+    result = dict(out)
+    if "culprits" in result:
+        result["culprits"] = [
+            c.to_dict() if isinstance(c, NodeAttribution) else c for c in result["culprits"]
+        ]
+    return result
+
+
+def _deserialize_out(d: dict[str, Any]) -> dict[str, Any]:
+    """Restore ``NodeAttribution`` objects from a serialized method output dict."""
+    result = dict(d)
+    if "culprits" in result:
+        result["culprits"] = [
+            NodeAttribution.from_dict(c) if isinstance(c, dict) else c for c in result["culprits"]
+        ]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Token accounting helper
+# ---------------------------------------------------------------------------
+
+
+def _read_tokens(llm: LLMFn) -> int:
+    """Read the cumulative ``tokens_used`` from an LLM callable, or 0."""
+    return int(getattr(llm, "tokens_used", 0))
+
+
+# ---------------------------------------------------------------------------
+# Origin class
+# ---------------------------------------------------------------------------
+
+
 class Origin:
     """Failure attribution for agent pipelines.
 
@@ -66,6 +143,7 @@ class Origin:
         origin = Origin(llm=anthropic_llm())
         result = origin.diagnose(trace=my_trace, score=0.4, rubric=my_rubric)
         print(result.render())
+        print(f"LLM tokens used: {result.llm_tokens}")
 
     For ablation (the causal second-opinion method), supply a
     ``runner`` and ``judge``::
@@ -74,15 +152,18 @@ class Origin:
         result = origin.diagnose(
             trace=my_trace, score=0.4, rubric=my_rubric, method="all",
         )
-        # `method="all"` now includes ablation alongside critic and
-        # decomposition. When the three methods agree on a span, its
-        # merged confidence is high; when they disagree, the reader can
-        # see which method said what.
+
+    For checkpointing and resume, pass a :class:`~aevyra_origin.run_store.DiagnoseRun`::
+
+        from aevyra_origin.run_store import DiagnoseStore
+        store = DiagnoseStore()
+        run = store.new_run()
+        result = origin.diagnose(trace=my_trace, score=0.4, rubric=my_rubric, run=run)
 
     Args:
         llm:    A callable ``(prompt: str) -> str`` — any LLM-ish function.
                 Use the factories in ``aevyra_origin.llm`` for common
-                backends, or pass your own wrapper.
+                backends (they also track token usage), or pass your own wrapper.
         runner: Optional pipeline-replay callable for ablation. Signature
                 ``(trace, overrides: dict[span_id, forced_output]) -> trace``.
                 See :mod:`aevyra_origin.ablation` for the contract.
@@ -133,6 +214,7 @@ class Origin:
         method: Method = "all",
         ablation_placeholder: str = "null",
         ablation_budget: int | None = None,
+        run: "Any | None" = None,  # DiagnoseRun | None — avoid circular import
     ) -> Attribution:
         """Attribute a trace's failure to specific node(s).
 
@@ -150,9 +232,15 @@ class Origin:
             ablation_budget: Max number of spans to ablate. ``None``
                      means ablate every span; set a small integer for
                      quick sanity checks on long traces.
+            run:     Optional :class:`~aevyra_origin.run_store.DiagnoseRun`.
+                     When provided, Origin writes a checkpoint after each
+                     method completes and saves the final result on
+                     completion. If the run has an existing checkpoint,
+                     already-completed methods are skipped (resume).
 
         Returns:
-            An ``Attribution`` with ranked culprits and a summary.
+            An ``Attribution`` with ranked culprits, a summary, and token
+            accounting fields.
         """
         if method not in VALID_METHODS:
             raise ValueError(f"method must be one of {VALID_METHODS}, got {method!r}")
@@ -166,58 +254,145 @@ class Origin:
                 "runner and judge; got runner={} judge={}".format(self.runner, self.judge)
             )
 
-        raw: dict[str, Any] = {}
+        # --- Load checkpoint if resuming -----------------------------------
+        checkpoint = run.load_checkpoint() if run is not None else None
+        completed: set[str] = set(checkpoint.completed_methods) if checkpoint else set()
+        method_outputs: dict[str, Any] = {}
+        if checkpoint:
+            for m, raw_out in checkpoint.method_outputs.items():
+                method_outputs[m] = _deserialize_out(raw_out)
+        llm_tokens: int = checkpoint.llm_tokens if checkpoint else 0
+        ablation_calls: int = checkpoint.ablation_calls if checkpoint else 0
+
+        # Save config on first run (no checkpoint yet)
+        if run is not None and checkpoint is None:
+            run.save_config(
+                rubric=rubric,
+                method=method,
+                score=float(score),
+                trace_dict=trace.to_dict(),
+            )
+
+        def _save_checkpoint() -> None:
+            if run is None:
+                return
+            from aevyra_origin.run_store import CheckpointState
+
+            run.save_checkpoint(
+                CheckpointState(
+                    run_id=run.run_id,
+                    rubric=rubric,
+                    method=method,
+                    score=float(score),
+                    trace_dict=trace.to_dict(),
+                    completed_methods=list(completed),
+                    method_outputs={m: _serialize_out(o) for m, o in method_outputs.items()},
+                    llm_tokens=llm_tokens,
+                    ablation_calls=ablation_calls,
+                )
+            )
 
         # --- Single-method dispatch ----------------------------------------
         if method == "critic":
-            out = run_critic(trace=trace, score=score, rubric=rubric, llm=self.llm)
-            raw["critic"] = out
-            return Attribution(
+            if "critic" not in completed:
+                tok_before = _read_tokens(self.llm)
+                out = run_critic(trace=trace, score=score, rubric=rubric, llm=self.llm)
+                llm_tokens += _read_tokens(self.llm) - tok_before
+                method_outputs["critic"] = out
+                completed.add("critic")
+                _save_checkpoint()
+            else:
+                out = method_outputs["critic"]
+                logger.info("diagnose: skipping critic (already completed in checkpoint)")
+            result = Attribution(
                 summary=out["summary"],
                 culprits=out["culprits"],
                 method="critic",
                 score=float(score),
-                raw=raw,
+                llm_tokens=llm_tokens,
+                raw={"critic": out},
             )
+            if run is not None:
+                run.save_result(result.to_dict())
+            return result
 
         if method == "decomposition":
-            out = run_decomposition(trace=trace, score=score, rubric=rubric, llm=self.llm)
-            raw["decomposition"] = out
-            return Attribution(
+            if "decomposition" not in completed:
+                tok_before = _read_tokens(self.llm)
+                out = run_decomposition(trace=trace, score=score, rubric=rubric, llm=self.llm)
+                llm_tokens += _read_tokens(self.llm) - tok_before
+                method_outputs["decomposition"] = out
+                completed.add("decomposition")
+                _save_checkpoint()
+            else:
+                out = method_outputs["decomposition"]
+                logger.info("diagnose: skipping decomposition (already completed in checkpoint)")
+            result = Attribution(
                 summary=out["summary"],
                 culprits=out["culprits"],
                 method="decomposition",
                 score=float(score),
-                raw=raw,
+                llm_tokens=llm_tokens,
+                raw={"decomposition": out},
             )
+            if run is not None:
+                run.save_result(result.to_dict())
+            return result
 
         if method == "ablation":
-            # ablation_available guaranteed True by the guard above.
             assert self.runner is not None and self.judge is not None
-            out = run_ablation(
-                trace=trace,
-                score=score,
-                rubric=rubric,
-                runner=self.runner,
-                judge=self.judge,
-                placeholder=ablation_placeholder,  # type: ignore[arg-type]
-                budget=ablation_budget,
-                score_range=self.score_range,
-            )
-            raw["ablation"] = out
-            return Attribution(
+            if "ablation" not in completed:
+                out = run_ablation(
+                    trace=trace,
+                    score=score,
+                    rubric=rubric,
+                    runner=self.runner,
+                    judge=self.judge,
+                    placeholder=ablation_placeholder,  # type: ignore[arg-type]
+                    budget=ablation_budget,
+                    score_range=self.score_range,
+                )
+                ablation_calls += out.get("num_effects", 0)
+                method_outputs["ablation"] = out
+                completed.add("ablation")
+                _save_checkpoint()
+            else:
+                out = method_outputs["ablation"]
+                logger.info("diagnose: skipping ablation (already completed in checkpoint)")
+            result = Attribution(
                 summary=out["summary"],
                 culprits=out["culprits"],
                 method="ablation",
                 score=float(score),
-                raw=raw,
+                ablation_calls=ablation_calls,
+                raw={"ablation": out},
             )
+            if run is not None:
+                run.save_result(result.to_dict())
+            return result
 
         # --- method == "all" ------------------------------------------------
-        critic_out = run_critic(trace=trace, score=score, rubric=rubric, llm=self.llm)
-        decomp_out = run_decomposition(trace=trace, score=score, rubric=rubric, llm=self.llm)
-        raw["critic"] = critic_out
-        raw["decomposition"] = decomp_out
+        if "critic" not in completed:
+            tok_before = _read_tokens(self.llm)
+            critic_out = run_critic(trace=trace, score=score, rubric=rubric, llm=self.llm)
+            llm_tokens += _read_tokens(self.llm) - tok_before
+            method_outputs["critic"] = critic_out
+            completed.add("critic")
+            _save_checkpoint()
+        else:
+            critic_out = method_outputs["critic"]
+            logger.info("diagnose: skipping critic (already completed in checkpoint)")
+
+        if "decomposition" not in completed:
+            tok_before = _read_tokens(self.llm)
+            decomp_out = run_decomposition(trace=trace, score=score, rubric=rubric, llm=self.llm)
+            llm_tokens += _read_tokens(self.llm) - tok_before
+            method_outputs["decomposition"] = decomp_out
+            completed.add("decomposition")
+            _save_checkpoint()
+        else:
+            decomp_out = method_outputs["decomposition"]
+            logger.info("diagnose: skipping decomposition (already completed in checkpoint)")
 
         per_method_culprits: dict[str, list[NodeAttribution]] = {
             "critic": critic_out["culprits"],
@@ -230,31 +405,44 @@ class Origin:
 
         if self.ablation_available:
             assert self.runner is not None and self.judge is not None
-            ablation_out = run_ablation(
-                trace=trace,
-                score=score,
-                rubric=rubric,
-                runner=self.runner,
-                judge=self.judge,
-                placeholder=ablation_placeholder,  # type: ignore[arg-type]
-                budget=ablation_budget,
-                score_range=self.score_range,
-            )
-            raw["ablation"] = ablation_out
+            if "ablation" not in completed:
+                ablation_out = run_ablation(
+                    trace=trace,
+                    score=score,
+                    rubric=rubric,
+                    runner=self.runner,
+                    judge=self.judge,
+                    placeholder=ablation_placeholder,  # type: ignore[arg-type]
+                    budget=ablation_budget,
+                    score_range=self.score_range,
+                )
+                ablation_calls += ablation_out.get("num_effects", 0)
+                method_outputs["ablation"] = ablation_out
+                completed.add("ablation")
+                _save_checkpoint()
+            else:
+                ablation_out = method_outputs["ablation"]
+                logger.info("diagnose: skipping ablation (already completed in checkpoint)")
             per_method_culprits["ablation"] = ablation_out["culprits"]
             per_method_summaries["ablation"] = ablation_out["summary"]
         else:
             logger.debug("ablation skipped in method='all' (runner/judge not configured)")
 
+        raw: dict[str, Any] = {k: method_outputs[k] for k in method_outputs}
         merged = _merge(per_method_culprits, trace)
         summary = _merge_summaries(per_method_summaries)
-        return Attribution(
+        result = Attribution(
             summary=summary,
             culprits=merged,
             method="all",
             score=float(score),
+            llm_tokens=llm_tokens,
+            ablation_calls=ablation_calls,
             raw=raw,
         )
+        if run is not None:
+            run.save_result(result.to_dict())
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +500,6 @@ def _merge(
             b["sev"] = _max_severity(b["sev"], c.severity)
             if c.reasoning:
                 b["parts"].append(f"[{method}] {c.reasoning}")
-            # Fill in prompt_id from any method that has it.
             if c.prompt_id and not b["prompt_id"]:
                 b["prompt_id"] = c.prompt_id
 
@@ -347,7 +534,6 @@ def _corroborated_confidence(confidences: list[float]) -> float:
         return max(0.0, min(1.0, confidences[0]))
     avg = sum(confidences) / len(confidences)
     peak = max(confidences)
-    # 2 methods → halfway between avg and peak; 3 methods → 2/3 of the way.
     weight = 1.0 - 1.0 / len(confidences)
     corroborated = avg + (peak - avg) * weight
     return max(0.0, min(1.0, corroborated))
@@ -358,11 +544,7 @@ def _max_severity(a: str, b: str) -> str:
 
 
 def _merge_summaries(per_method: dict[str, str]) -> str:
-    """Stitch the per-method summaries into one paragraph.
-
-    Leads with the critic summary (LLM-as-critic produces the most
-    narrative one), then annotates the others in parentheses.
-    """
+    """Stitch the per-method summaries into one paragraph."""
     critic = (per_method.get("critic") or "").strip()
     decomp = (per_method.get("decomposition") or "").strip()
     ablation = (per_method.get("ablation") or "").strip()
