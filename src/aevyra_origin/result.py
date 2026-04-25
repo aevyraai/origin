@@ -84,13 +84,9 @@ class NodeAttribution:
 
     def __post_init__(self) -> None:
         if self.severity not in VALID_SEVERITIES:
-            raise ValueError(
-                f"severity must be one of {VALID_SEVERITIES}, got {self.severity!r}"
-            )
+            raise ValueError(f"severity must be one of {VALID_SEVERITIES}, got {self.severity!r}")
         if not (0.0 <= self.confidence <= 1.0):
-            raise ValueError(
-                f"confidence must be in [0.0, 1.0], got {self.confidence!r}"
-            )
+            raise ValueError(f"confidence must be in [0.0, 1.0], got {self.confidence!r}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -254,9 +250,7 @@ class Attribution:
             label = c.node_name
             if c.node_id:
                 label = f"{c.node_name} (id={c.node_id})"
-            lines.append(
-                f"  {i}. {label}  [{c.severity}, confidence={c.confidence:.2f}]"
-            )
+            lines.append(f"  {i}. {label}  [{c.severity}, confidence={c.confidence:.2f}]")
             lines.append(f"     {c.reasoning}")
 
         # If there's a prompt-level rollup worth showing, append it.

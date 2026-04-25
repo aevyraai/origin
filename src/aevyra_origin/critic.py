@@ -98,6 +98,7 @@ def run_critic(
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
+
 def _fmt_score(score: float) -> str:
     """Format a score so the LLM sees a clean, stable number."""
     if isinstance(score, bool):
@@ -155,8 +156,7 @@ def _normalize(
         severity = str(c.get("severity", "")).strip().lower()
         if severity not in VALID_SEVERITIES:
             raise CriticError(
-                f"culprit #{i} has invalid severity {severity!r}; "
-                f"must be one of {VALID_SEVERITIES}"
+                f"culprit #{i} has invalid severity {severity!r}; must be one of {VALID_SEVERITIES}"
             )
 
         confidence = _coerce_float(c.get("confidence"))
@@ -202,14 +202,16 @@ def _resolve_span(
         if node is None:
             valid = [n.id for n in trace.nodes]
             raise CriticError(
-                f"culprit #{index} references unknown node_id {node_id!r}; "
-                f"trace has ids {valid}"
+                f"culprit #{index} references unknown node_id {node_id!r}; trace has ids {valid}"
             )
         if node_name and node_name != node.name:
             logger.warning(
                 "culprit #%d: node_name %r does not match span name %r for id=%s; "
                 "using id as authoritative",
-                index, node_name, node.name, node_id,
+                index,
+                node_name,
+                node.name,
+                node_id,
             )
         return node
 
@@ -221,8 +223,7 @@ def _resolve_span(
     if count == 0:
         names = sorted(set(n.name for n in trace.nodes))
         raise CriticError(
-            f"culprit #{index} references unknown node_name {node_name!r}; "
-            f"trace has names {names}"
+            f"culprit #{index} references unknown node_name {node_name!r}; trace has names {names}"
         )
     if count > 1:
         matching_ids = [n.id for n in trace.nodes if n.name == node_name]

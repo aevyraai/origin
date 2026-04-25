@@ -94,17 +94,19 @@ def runner(original: AgentTrace, overrides: dict[str, Any]) -> AgentTrace:
     new_nodes = []
     for n in original.nodes:
         if n.id in overrides:
-            new_nodes.append(TraceNode(
-                name=n.name,
-                input=n.input,
-                output=overrides[n.id],
-                id=n.id,
-                parent_id=n.parent_id,
-                kind=n.kind,
-                optimize=n.optimize,
-                prompt_id=n.prompt_id,
-                metadata=dict(n.metadata),
-            ))
+            new_nodes.append(
+                TraceNode(
+                    name=n.name,
+                    input=n.input,
+                    output=overrides[n.id],
+                    id=n.id,
+                    parent_id=n.parent_id,
+                    kind=n.kind,
+                    optimize=n.optimize,
+                    prompt_id=n.prompt_id,
+                    metadata=dict(n.metadata),
+                )
+            )
         else:
             new_nodes.append(n)
     return AgentTrace(nodes=new_nodes, ideal=original.ideal, metadata=dict(original.metadata))
@@ -150,12 +152,13 @@ if __name__ == "__main__":
     )
 
     result = diagnose_pipeline(
-        triage_agent, question,
+        triage_agent,
+        question,
         judge=judge,
         rubric=RUBRIC,
         llm=_pick_llm(),
         ideal=ideal,
-        runner=runner,          # enables ablation under method="all"
+        runner=runner,  # enables ablation under method="all"
         method="all",
         trace_metadata={"scenario": "duplicate_charge"},
     )

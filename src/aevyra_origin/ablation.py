@@ -228,9 +228,7 @@ def run_ablation(
     if not trace.nodes:
         raise ValueError("cannot ablate a trace with zero nodes")
     if placeholder not in VALID_PLACEHOLDERS:
-        raise ValueError(
-            f"placeholder must be one of {VALID_PLACEHOLDERS}, got {placeholder!r}"
-        )
+        raise ValueError(f"placeholder must be one of {VALID_PLACEHOLDERS}, got {placeholder!r}")
     if not callable(runner):
         raise TypeError(f"runner must be callable, got {type(runner).__name__}")
     if not callable(judge):
@@ -238,9 +236,7 @@ def run_ablation(
     lo, hi = score_range
     span = float(hi) - float(lo)
     if span <= 0:
-        raise ValueError(
-            f"score_range must have hi > lo; got {score_range!r}"
-        )
+        raise ValueError(f"score_range must have hi > lo; got {score_range!r}")
 
     # --- Candidate selection -------------------------------------------------
     chosen = _select_candidates(trace, candidates, budget)
@@ -411,9 +407,7 @@ def _select_candidates(
             else:
                 chosen.append(n)
         if unknown:
-            raise ValueError(
-                f"candidates reference unknown span ids: {unknown!r}"
-            )
+            raise ValueError(f"candidates reference unknown span ids: {unknown!r}")
 
     if budget is not None:
         if budget < 0:
@@ -503,8 +497,7 @@ def _format_reasoning(
         )
     else:
         verdict = (
-            " The score was unchanged; this span's output has no measurable "
-            "effect on the judge."
+            " The score was unchanged; this span's output has no measurable effect on the judge."
         )
     return base + verdict
 
@@ -530,7 +523,9 @@ def _build_summary(
             "the threshold, or the judge does not discriminate at this resolution."
         )
     top = culprits[0]
-    top_eff = next(e for e in effects if (e.node.id or e.node.name) == (top.node_id or top.node_name))
+    top_eff = next(
+        e for e in effects if (e.node.id or e.node.name) == (top.node_id or top.node_name)
+    )
     harmful_count = sum(1 for e in effects if e.direction == "harmful" and e.error is None)
     parts = [
         f"Ablation (placeholder={placeholder!r}, original score={original_score:.3f}) "

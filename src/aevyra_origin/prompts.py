@@ -230,9 +230,7 @@ def format_critic_prompt(*, rubric: str, score: str, ideal: str, trace_text: str
     )
 
 
-def format_decomposition_prompt(
-    *, rubric: str, score: str, ideal: str, trace_text: str
-) -> str:
+def format_decomposition_prompt(*, rubric: str, score: str, ideal: str, trace_text: str) -> str:
     """Build a decomposition prompt with the shared trace guide substituted in."""
     return DECOMPOSITION_PROMPT.format(
         trace_guide=_TRACE_GUIDE,

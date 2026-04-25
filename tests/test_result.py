@@ -201,8 +201,11 @@ class TestAttribution:
 
     def test_from_dict_score_coerced_to_float(self):
         d = {
-            "summary": "", "culprits": [], "method": "critic",
-            "score": "0.5", "raw": {},
+            "summary": "",
+            "culprits": [],
+            "method": "critic",
+            "score": "0.5",
+            "raw": {},
         }
         attr = Attribution.from_dict(d)
         assert isinstance(attr.score, float)
@@ -224,8 +227,11 @@ class TestAttribution:
         attr = _make_attribution(
             culprits=[
                 NodeAttribution(
-                    node_name="plan", severity="primary", confidence=0.8,
-                    reasoning="Planned badly.", node_id="p1",
+                    node_name="plan",
+                    severity="primary",
+                    confidence=0.8,
+                    reasoning="Planned badly.",
+                    node_id="p1",
                 )
             ]
         )
@@ -248,8 +254,12 @@ class TestByPrompt:
         attr = _make_attribution(
             culprits=[
                 NodeAttribution(
-                    node_name="plan", severity="primary", confidence=0.8,
-                    reasoning="Planning failed.", node_id="p1", prompt_id="planner",
+                    node_name="plan",
+                    severity="primary",
+                    confidence=0.8,
+                    reasoning="Planning failed.",
+                    node_id="p1",
+                    prompt_id="planner",
                 )
             ]
         )
@@ -265,12 +275,20 @@ class TestByPrompt:
         attr = _make_attribution(
             culprits=[
                 NodeAttribution(
-                    node_name="plan", severity="primary", confidence=0.8,
-                    reasoning="Step 1 fail.", node_id="p1", prompt_id="planner",
+                    node_name="plan",
+                    severity="primary",
+                    confidence=0.8,
+                    reasoning="Step 1 fail.",
+                    node_id="p1",
+                    prompt_id="planner",
                 ),
                 NodeAttribution(
-                    node_name="plan", severity="contributing", confidence=0.4,
-                    reasoning="Step 2 fail.", node_id="p2", prompt_id="planner",
+                    node_name="plan",
+                    severity="contributing",
+                    confidence=0.4,
+                    reasoning="Step 2 fail.",
+                    node_id="p2",
+                    prompt_id="planner",
                 ),
             ]
         )
@@ -289,12 +307,20 @@ class TestByPrompt:
         attr = _make_attribution(
             culprits=[
                 NodeAttribution(
-                    node_name="search", severity="minor", confidence=0.2,
-                    reasoning="Tool call failed.", node_id="t1", prompt_id=None,
+                    node_name="search",
+                    severity="minor",
+                    confidence=0.2,
+                    reasoning="Tool call failed.",
+                    node_id="t1",
+                    prompt_id=None,
                 ),
                 NodeAttribution(
-                    node_name="plan", severity="primary", confidence=0.9,
-                    reasoning="Planning failed.", node_id="p1", prompt_id="planner",
+                    node_name="plan",
+                    severity="primary",
+                    confidence=0.9,
+                    reasoning="Planning failed.",
+                    node_id="p1",
+                    prompt_id="planner",
                 ),
             ]
         )
@@ -306,12 +332,20 @@ class TestByPrompt:
         attr = _make_attribution(
             culprits=[
                 NodeAttribution(
-                    node_name="a", severity="minor", confidence=0.3,
-                    reasoning="A.", node_id="a1", prompt_id="prompt_a",
+                    node_name="a",
+                    severity="minor",
+                    confidence=0.3,
+                    reasoning="A.",
+                    node_id="a1",
+                    prompt_id="prompt_a",
                 ),
                 NodeAttribution(
-                    node_name="b", severity="primary", confidence=0.9,
-                    reasoning="B.", node_id="b1", prompt_id="prompt_b",
+                    node_name="b",
+                    severity="primary",
+                    confidence=0.9,
+                    reasoning="B.",
+                    node_id="b1",
+                    prompt_id="prompt_b",
                 ),
             ]
         )
@@ -322,12 +356,20 @@ class TestByPrompt:
         attr = _make_attribution(
             culprits=[
                 NodeAttribution(
-                    node_name="plan", severity="primary", confidence=0.8,
-                    reasoning="Step 1 reasoning.", node_id="p1", prompt_id="planner",
+                    node_name="plan",
+                    severity="primary",
+                    confidence=0.8,
+                    reasoning="Step 1 reasoning.",
+                    node_id="p1",
+                    prompt_id="planner",
                 ),
                 NodeAttribution(
-                    node_name="plan", severity="contributing", confidence=0.4,
-                    reasoning="Step 2 reasoning.", node_id="p2", prompt_id="planner",
+                    node_name="plan",
+                    severity="contributing",
+                    confidence=0.4,
+                    reasoning="Step 2 reasoning.",
+                    node_id="p2",
+                    prompt_id="planner",
                 ),
             ]
         )
@@ -353,8 +395,11 @@ class TestPromptAttribution:
             confidence=0.75,
             spans=[
                 NodeAttribution(
-                    node_name="plan", severity="primary", confidence=0.75,
-                    reasoning="Bad plan.", node_id="p1",
+                    node_name="plan",
+                    severity="primary",
+                    confidence=0.75,
+                    reasoning="Bad plan.",
+                    node_id="p1",
                 )
             ],
             reasoning="[p1] Bad plan.",

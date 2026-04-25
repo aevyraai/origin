@@ -79,9 +79,7 @@ def run_decomposition(
     try:
         parsed = extract_json(raw)
     except JSONParseError as e:
-        raise DecompositionError(
-            f"decomposition response was not parseable JSON: {e}"
-        ) from e
+        raise DecompositionError(f"decomposition response was not parseable JSON: {e}") from e
 
     criteria = _parse_criteria(parsed, trace)
     culprits = _aggregate(criteria, trace)
@@ -99,12 +97,11 @@ def run_decomposition(
 # Parsing
 # ---------------------------------------------------------------------------
 
+
 def _parse_criteria(parsed: dict[str, Any], trace: AgentTrace) -> list[dict[str, Any]]:
     raw_criteria = parsed.get("criteria", [])
     if not isinstance(raw_criteria, list):
-        raise DecompositionError(
-            f"'criteria' must be a list, got {type(raw_criteria).__name__}"
-        )
+        raise DecompositionError(f"'criteria' must be a list, got {type(raw_criteria).__name__}")
 
     # Precompute name ambiguity.
     name_counts: dict[str, int] = {}
@@ -136,9 +133,7 @@ def _parse_criteria(parsed: dict[str, Any], trace: AgentTrace) -> list[dict[str,
         nodes: list[dict[str, Any]] = []
         for j, n in enumerate(raw_nodes):
             if not isinstance(n, dict):
-                raise DecompositionError(
-                    f"criterion #{i} node #{j} is not an object: {n!r}"
-                )
+                raise DecompositionError(f"criterion #{i} node #{j} is not an object: {n!r}")
             node_id = str(n.get("node_id", "")).strip() or None
             node_name = str(n.get("node_name", "")).strip()
 
@@ -219,9 +214,7 @@ def _aggregate(
             key = n["node_id"]
             blame[key] = blame.get(key, 0.0) + n["contribution"]
             if n["reasoning"]:
-                reasons.setdefault(key, []).append(
-                    f"[{c['criterion']}] {n['reasoning']}"
-                )
+                reasons.setdefault(key, []).append(f"[{c['criterion']}] {n['reasoning']}")
 
     n_failed = len(failed)
     # Preserve trace order for ties.
@@ -248,8 +241,7 @@ def _aggregate(
                 node_name=span.name,
                 severity=severity,  # type: ignore[arg-type]
                 confidence=score,
-                reasoning="  ".join(reasons.get(node_id, []))
-                or "(no per-criterion reasoning)",
+                reasoning="  ".join(reasons.get(node_id, [])) or "(no per-criterion reasoning)",
                 node_id=span.id or None,
                 prompt_id=span.prompt_id,
             )
@@ -272,15 +264,17 @@ def _summarize(criteria: list[dict[str, Any]]) -> str:
     if failed == 0:
         return f"All {len(criteria)} criteria passed."
     parts = [
-        f"Score decomposition: {passed}/{len(criteria)} criteria passed, "
-        f"{failed} failed.",
+        f"Score decomposition: {passed}/{len(criteria)} criteria passed, {failed} failed.",
     ]
     for c in criteria:
         if not c["satisfied"]:
-            contributors = ", ".join(
-                f"{n['node_name']}({n['node_id']}) [{n['contribution']:.2f}]"
-                for n in c["nodes"]
-            ) or "no spans attributed"
+            contributors = (
+                ", ".join(
+                    f"{n['node_name']}({n['node_id']}) [{n['contribution']:.2f}]"
+                    for n in c["nodes"]
+                )
+                or "no spans attributed"
+            )
             parts.append(f"Failed: {c['criterion']} — {contributors}.")
     return " ".join(parts)
 
@@ -289,6 +283,7 @@ def _summarize(criteria: list[dict[str, Any]]) -> str:
 # Span resolution (shared shape with critic._resolve_span, but local copy
 # to keep the two methods independent — they may diverge later)
 # ---------------------------------------------------------------------------
+
 
 def _resolve_span(
     *,
@@ -310,14 +305,17 @@ def _resolve_span(
         if node_name and node_name != node.name:
             logger.warning(
                 "criterion #%d node #%d: node_name %r does not match span name %r for id=%s",
-                crit_index, node_index, node_name, node.name, node_id,
+                crit_index,
+                node_index,
+                node_name,
+                node.name,
+                node_id,
             )
         return node
 
     if not node_name:
         raise DecompositionError(
-            f"criterion #{crit_index} node #{node_index} is missing both "
-            f"'node_id' and 'node_name'"
+            f"criterion #{crit_index} node #{node_index} is missing both 'node_id' and 'node_name'"
         )
 
     count = name_counts.get(node_name, 0)
@@ -339,14 +337,14 @@ def _resolve_span(
         if n.name == node_name:
             return n
     raise DecompositionError(
-        f"criterion #{crit_index} node #{node_index}: internal error resolving "
-        f"span {node_name!r}"
+        f"criterion #{crit_index} node #{node_index}: internal error resolving span {node_name!r}"
     )
 
 
 # ---------------------------------------------------------------------------
 # Coercion helpers
 # ---------------------------------------------------------------------------
+
 
 def _fmt_score(score: float) -> str:
     if isinstance(score, bool):
