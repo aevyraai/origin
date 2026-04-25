@@ -30,7 +30,6 @@ Run this file directly to smoke-test the pipeline and print the trace.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from aevyra_witness import KIND_REASON, KIND_TOOL
