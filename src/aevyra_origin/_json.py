@@ -84,14 +84,10 @@ def extract_json(text: str) -> dict[str, Any]:
                 return parsed
         except json.JSONDecodeError as e:
             raise JSONParseError(
-                f"found a JSON-like block but could not parse it: {e}\n"
-                f"---\n{obj[:500]}\n---"
+                f"found a JSON-like block but could not parse it: {e}\n---\n{obj[:500]}\n---"
             ) from e
 
-    raise JSONParseError(
-        "no parseable JSON object found in response\n"
-        f"---\n{stripped[:500]}\n---"
-    )
+    raise JSONParseError(f"no parseable JSON object found in response\n---\n{stripped[:500]}\n---")
 
 
 def _extract_first_object(s: str) -> str | None:

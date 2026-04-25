@@ -38,6 +38,7 @@ from aevyra_origin.judges import (
 @dataclass
 class _FakeScoreResult:
     """Duck-types Verdict's ScoreResult."""
+
     score: float
     reasoning: str | None = None
 
@@ -108,10 +109,12 @@ class TestDefaultResponseFromTrace:
         assert "WEIRD" in out
 
     def test_last_root_wins_when_multiple_roots(self):
-        t = AgentTrace(nodes=[
-            TraceNode(name="a", input="q", output="first"),
-            TraceNode(name="b", input="q", output="second"),
-        ])
+        t = AgentTrace(
+            nodes=[
+                TraceNode(name="a", input="q", output="first"),
+                TraceNode(name="b", input="q", output="second"),
+            ]
+        )
         assert default_response_from_trace(t) == "second"
 
     def test_empty_trace_raises(self):
@@ -138,10 +141,12 @@ class TestDefaultMessagesFromTrace:
         assert default_messages_from_trace(_make_empty_trace()) is None
 
     def test_first_root_wins(self):
-        t = AgentTrace(nodes=[
-            TraceNode(name="a", input="first", output="x"),
-            TraceNode(name="b", input="second", output="y"),
-        ])
+        t = AgentTrace(
+            nodes=[
+                TraceNode(name="a", input="first", output="x"),
+                TraceNode(name="b", input="second", output="y"),
+            ]
+        )
         msgs = default_messages_from_trace(t)
         assert msgs == [{"role": "user", "content": "first"}]
 
@@ -191,6 +196,7 @@ class TestJudgeFromVerdictCore:
 
     def test_metric_returning_plain_float(self):
         """Metric that returns a bare number (no ScoreResult object) still works."""
+
         class NumericMetric:
             def score(self, response, ideal, messages):
                 return 0.42
@@ -232,10 +238,12 @@ class TestCustomExtractors:
 
         judge = judge_from_verdict(metric, extract_response=extract)
 
-        t = AgentTrace(nodes=[
-            TraceNode(name="classify", input="q", output="billing"),
-            TraceNode(name="answer", input="q", output="custom response"),
-        ])
+        t = AgentTrace(
+            nodes=[
+                TraceNode(name="classify", input="q", output="billing"),
+                TraceNode(name="answer", input="q", output="custom response"),
+            ]
+        )
         judge(t)
         assert metric.calls[0]["response"] == "custom response"
 
@@ -274,18 +282,21 @@ verdict = pytest.importorskip("aevyra_verdict")
 class TestVerdictIntegration:
     def test_exact_match_correct_response_scores_one(self):
         from aevyra_verdict import ExactMatch
+
         judge = judge_from_verdict(ExactMatch())
         t = _make_trace(input_="2+2?", output="four", ideal="four")
         assert judge(t) == 1.0
 
     def test_exact_match_wrong_response_scores_zero(self):
         from aevyra_verdict import ExactMatch
+
         judge = judge_from_verdict(ExactMatch())
         t = _make_trace(input_="2+2?", output="four", ideal="five")
         assert judge(t) == 0.0
 
     def test_exact_match_with_non_string_output_uses_json(self):
         from aevyra_verdict import ExactMatch
+
         judge = judge_from_verdict(ExactMatch())
         # Default extractor json-encodes the output; ideal must match that form.
         t = _make_trace(output={"a": 1}, ideal='{"a": 1}')

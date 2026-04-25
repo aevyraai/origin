@@ -189,17 +189,14 @@ class Origin:
                 f"llm must be a callable (prompt: str) -> str, got {type(llm).__name__}"
             )
         if runner is not None and not callable(runner):
-            raise TypeError(
-                f"runner must be callable or None, got {type(runner).__name__}"
-            )
+            raise TypeError(f"runner must be callable or None, got {type(runner).__name__}")
         if judge is not None and not callable(judge):
-            raise TypeError(
-                f"judge must be callable or None, got {type(judge).__name__}"
-            )
+            raise TypeError(f"judge must be callable or None, got {type(judge).__name__}")
+        # runner and judge come as a pair — having one without the other
+        # is always a caller mistake, and silently not running ablation
+        # would be surprising.
         if bool(runner) ^ bool(judge):
-            raise ValueError(
-                "runner and judge must be provided together (ablation needs both)"
-            )
+            raise ValueError("runner and judge must be provided together (ablation needs both)")
         self.llm = llm
         self.runner = runner
         self.judge = judge
@@ -248,9 +245,7 @@ class Origin:
             accounting fields.
         """
         if method not in VALID_METHODS:
-            raise ValueError(
-                f"method must be one of {VALID_METHODS}, got {method!r}"
-            )
+            raise ValueError(f"method must be one of {VALID_METHODS}, got {method!r}")
         if not trace.nodes:
             raise ValueError("cannot diagnose a trace with zero nodes")
         if not rubric or not rubric.strip():
@@ -258,9 +253,7 @@ class Origin:
         if method == "ablation" and not self.ablation_available:
             raise ValueError(
                 "method='ablation' requires Origin to be constructed with a "
-                "runner and judge; got runner={} judge={}".format(
-                    self.runner, self.judge
-                )
+                "runner and judge; got runner={} judge={}".format(self.runner, self.judge)
             )
 
         # --- Load checkpoint if resuming -----------------------------------
@@ -434,9 +427,7 @@ class Origin:
             per_method_culprits["ablation"] = ablation_out["culprits"]
             per_method_summaries["ablation"] = ablation_out["summary"]
         else:
-            logger.debug(
-                "ablation skipped in method='all' (runner/judge not configured)"
-            )
+            logger.debug("ablation skipped in method='all' (runner/judge not configured)")
 
         raw: dict[str, Any] = {k: method_outputs[k] for k in method_outputs}
         merged = _merge(per_method_culprits, trace)
@@ -598,9 +589,7 @@ def diagnose(
     Useful when you don't want to hold onto an ``Origin`` instance.
     Pass ``runner`` and ``judge`` if you want ablation to participate.
     """
-    return Origin(
-        llm=llm, runner=runner, judge=judge, score_range=score_range
-    ).diagnose(
+    return Origin(llm=llm, runner=runner, judge=judge, score_range=score_range).diagnose(
         trace=trace,
         score=score,
         rubric=rubric,

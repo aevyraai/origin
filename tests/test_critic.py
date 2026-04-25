@@ -34,28 +34,51 @@ from aevyra_origin.critic import CriticError, run_critic
 
 
 def linear_trace() -> AgentTrace:
-    return AgentTrace(nodes=[
-        TraceNode("classify", input="ticket text", output="billing"),
-        TraceNode("retrieve", input="billing", output="policy doc..."),
-        TraceNode("answer", input="ticket+docs", output="wrong reply", optimize=True),
-    ])
+    return AgentTrace(
+        nodes=[
+            TraceNode("classify", input="ticket text", output="billing"),
+            TraceNode("retrieve", input="billing", output="policy doc..."),
+            TraceNode("answer", input="ticket+docs", output="wrong reply", optimize=True),
+        ]
+    )
 
 
 def dag_trace() -> AgentTrace:
-    return AgentTrace(nodes=[
-        TraceNode("plan", id="p1", kind=KIND_REASON, prompt_id="planner",
-                  step=1, input="q", output="call tools", optimize=True),
-        TraceNode("search", id="t1", kind=KIND_TOOL, parent_id="p1",
-                  input={"q": "x"}, output="result"),
-        TraceNode("plan", id="p2", kind=KIND_REASON, prompt_id="planner",
-                  step=2, input="ctx", output="respond", optimize=True),
-    ])
+    return AgentTrace(
+        nodes=[
+            TraceNode(
+                "plan",
+                id="p1",
+                kind=KIND_REASON,
+                prompt_id="planner",
+                step=1,
+                input="q",
+                output="call tools",
+                optimize=True,
+            ),
+            TraceNode(
+                "search", id="t1", kind=KIND_TOOL, parent_id="p1", input={"q": "x"}, output="result"
+            ),
+            TraceNode(
+                "plan",
+                id="p2",
+                kind=KIND_REASON,
+                prompt_id="planner",
+                step=2,
+                input="ctx",
+                output="respond",
+                optimize=True,
+            ),
+        ]
+    )
 
 
 def _stub_llm(response: str):
     """Returns an LLMFn that always returns ``response``."""
+
     def call(prompt: str) -> str:
         return response
+
     return call
 
 
@@ -73,12 +96,14 @@ class TestRunCriticLinear:
         trace = linear_trace()
         resp = _critic_response(
             summary="The answer node gave a wrong reply.",
-            culprits=[{
-                "node_name": "answer",
-                "severity": "primary",
-                "confidence": 0.9,
-                "reasoning": "The answer was incorrect.",
-            }],
+            culprits=[
+                {
+                    "node_name": "answer",
+                    "severity": "primary",
+                    "confidence": 0.9,
+                    "reasoning": "The answer was incorrect.",
+                }
+            ],
         )
         result = run_critic(trace=trace, score=0.3, rubric="Quality rubric.", llm=_stub_llm(resp))
         assert result["summary"] == "The answer node gave a wrong reply."
@@ -92,13 +117,15 @@ class TestRunCriticLinear:
         trace = linear_trace()
         resp = _critic_response(
             summary="Retrieve failed.",
-            culprits=[{
-                "node_id": "n1",
-                "node_name": "retrieve",
-                "severity": "contributing",
-                "confidence": 0.6,
-                "reasoning": "Retrieved wrong doc.",
-            }],
+            culprits=[
+                {
+                    "node_id": "n1",
+                    "node_name": "retrieve",
+                    "severity": "contributing",
+                    "confidence": 0.6,
+                    "reasoning": "Retrieved wrong doc.",
+                }
+            ],
         )
         result = run_critic(trace=trace, score=0.4, rubric="Quality rubric.", llm=_stub_llm(resp))
         c = result["culprits"][0]
@@ -152,30 +179,36 @@ class TestRunCriticLinear:
         trace = linear_trace()
         resp = _critic_response(
             summary="Clamped.",
-            culprits=[{
-                "node_name": "answer",
-                "severity": "primary",
-                "confidence": 1.5,  # over range
-                "reasoning": "Too confident.",
-            }],
+            culprits=[
+                {
+                    "node_name": "answer",
+                    "severity": "primary",
+                    "confidence": 1.5,  # over range
+                    "reasoning": "Too confident.",
+                }
+            ],
         )
         result = run_critic(trace=trace, score=0.3, rubric="Rubric.", llm=_stub_llm(resp))
         assert result["culprits"][0].confidence == 1.0
 
     def test_prompt_id_carried_from_span(self):
         # Build a trace where the node has a prompt_id.
-        trace = AgentTrace(nodes=[
-            TraceNode("plan", id="p1", prompt_id="planner", input="q", output="o"),
-        ])
+        trace = AgentTrace(
+            nodes=[
+                TraceNode("plan", id="p1", prompt_id="planner", input="q", output="o"),
+            ]
+        )
         resp = _critic_response(
             summary="Plan failed.",
-            culprits=[{
-                "node_id": "p1",
-                "node_name": "plan",
-                "severity": "primary",
-                "confidence": 0.8,
-                "reasoning": "Planning was wrong.",
-            }],
+            culprits=[
+                {
+                    "node_id": "p1",
+                    "node_name": "plan",
+                    "severity": "primary",
+                    "confidence": 0.8,
+                    "reasoning": "Planning was wrong.",
+                }
+            ],
         )
         result = run_critic(trace=trace, score=0.2, rubric="Rubric.", llm=_stub_llm(resp))
         assert result["culprits"][0].prompt_id == "planner"
@@ -191,13 +224,15 @@ class TestRunCriticDAG:
         trace = dag_trace()
         resp = _critic_response(
             summary="First plan step failed.",
-            culprits=[{
-                "node_id": "p1",
-                "node_name": "plan",
-                "severity": "primary",
-                "confidence": 0.85,
-                "reasoning": "Wrong tool selection.",
-            }],
+            culprits=[
+                {
+                    "node_id": "p1",
+                    "node_name": "plan",
+                    "severity": "primary",
+                    "confidence": 0.85,
+                    "reasoning": "Wrong tool selection.",
+                }
+            ],
         )
         result = run_critic(trace=trace, score=0.3, rubric="Rubric.", llm=_stub_llm(resp))
         c = result["culprits"][0]
@@ -209,12 +244,14 @@ class TestRunCriticDAG:
         trace = dag_trace()  # has two "plan" nodes
         resp = _critic_response(
             summary="Plan failed.",
-            culprits=[{
-                "node_name": "plan",  # ambiguous — no id
-                "severity": "primary",
-                "confidence": 0.8,
-                "reasoning": "Bad plan.",
-            }],
+            culprits=[
+                {
+                    "node_name": "plan",  # ambiguous — no id
+                    "severity": "primary",
+                    "confidence": 0.8,
+                    "reasoning": "Bad plan.",
+                }
+            ],
         )
         with pytest.raises(CriticError, match="ambiguous node_name"):
             run_critic(trace=trace, score=0.3, rubric="Rubric.", llm=_stub_llm(resp))
@@ -230,13 +267,15 @@ class TestRunCriticErrors:
         trace = linear_trace()
         resp = _critic_response(
             summary="Unknown.",
-            culprits=[{
-                "node_id": "nonexistent_id",
-                "node_name": "ghost",
-                "severity": "primary",
-                "confidence": 0.5,
-                "reasoning": "Ghost node.",
-            }],
+            culprits=[
+                {
+                    "node_id": "nonexistent_id",
+                    "node_name": "ghost",
+                    "severity": "primary",
+                    "confidence": 0.5,
+                    "reasoning": "Ghost node.",
+                }
+            ],
         )
         with pytest.raises(CriticError, match="unknown node_id"):
             run_critic(trace=trace, score=0.3, rubric="Rubric.", llm=_stub_llm(resp))
@@ -245,12 +284,14 @@ class TestRunCriticErrors:
         trace = linear_trace()
         resp = _critic_response(
             summary="Unknown.",
-            culprits=[{
-                "node_name": "nonexistent_node",
-                "severity": "primary",
-                "confidence": 0.5,
-                "reasoning": "Doesn't exist.",
-            }],
+            culprits=[
+                {
+                    "node_name": "nonexistent_node",
+                    "severity": "primary",
+                    "confidence": 0.5,
+                    "reasoning": "Doesn't exist.",
+                }
+            ],
         )
         with pytest.raises(CriticError, match="unknown node_name"):
             run_critic(trace=trace, score=0.3, rubric="Rubric.", llm=_stub_llm(resp))
@@ -259,12 +300,14 @@ class TestRunCriticErrors:
         trace = linear_trace()
         resp = _critic_response(
             summary="Bad sev.",
-            culprits=[{
-                "node_name": "answer",
-                "severity": "catastrophic",  # invalid
-                "confidence": 0.7,
-                "reasoning": "Very bad.",
-            }],
+            culprits=[
+                {
+                    "node_name": "answer",
+                    "severity": "catastrophic",  # invalid
+                    "confidence": 0.7,
+                    "reasoning": "Very bad.",
+                }
+            ],
         )
         with pytest.raises(CriticError, match="invalid severity"):
             run_critic(trace=trace, score=0.3, rubric="Rubric.", llm=_stub_llm(resp))
@@ -273,12 +316,14 @@ class TestRunCriticErrors:
         trace = linear_trace()
         resp = _critic_response(
             summary="Bad conf.",
-            culprits=[{
-                "node_name": "answer",
-                "severity": "primary",
-                "confidence": "high",  # non-numeric
-                "reasoning": "Bad.",
-            }],
+            culprits=[
+                {
+                    "node_name": "answer",
+                    "severity": "primary",
+                    "confidence": "high",  # non-numeric
+                    "reasoning": "Bad.",
+                }
+            ],
         )
         with pytest.raises(CriticError, match="non-numeric confidence"):
             run_critic(trace=trace, score=0.3, rubric="Rubric.", llm=_stub_llm(resp))
@@ -292,13 +337,15 @@ class TestRunCriticErrors:
         trace = linear_trace()
         resp = _critic_response(
             summary="Mismatch.",
-            culprits=[{
-                "node_id": "n0",  # this is "classify"
-                "node_name": "answer",  # wrong name for this id
-                "severity": "primary",
-                "confidence": 0.7,
-                "reasoning": "Mismatch test.",
-            }],
+            culprits=[
+                {
+                    "node_id": "n0",  # this is "classify"
+                    "node_name": "answer",  # wrong name for this id
+                    "severity": "primary",
+                    "confidence": 0.7,
+                    "reasoning": "Mismatch test.",
+                }
+            ],
         )
         with caplog.at_level(logging.WARNING, logger="aevyra_origin.critic"):
             result = run_critic(trace=trace, score=0.3, rubric="Rubric.", llm=_stub_llm(resp))

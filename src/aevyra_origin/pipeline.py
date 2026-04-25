@@ -183,9 +183,7 @@ def diagnose_pipeline(
             "— un-instrumented code runs fine but yields nothing to attribute."
         )
 
-    logger.debug(
-        "diagnose_pipeline: captured trace with %d spans", len(captured_trace.nodes)
-    )
+    logger.debug("diagnose_pipeline: captured trace with %d spans", len(captured_trace.nodes))
 
     # --- 2. Ask the judge for a score --------------------------------------
     try:

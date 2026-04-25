@@ -30,6 +30,7 @@ except ImportError:
 def _version_callback(value: bool) -> None:
     if value:
         from aevyra_origin import __version__
+
         typer.echo(f"aevyra-origin {__version__}")
         raise typer.Exit()
 
@@ -93,7 +94,9 @@ def diagnose(
     ] = None,
     method: Annotated[
         str,
-        typer.Option("--method", help="Attribution method: critic, decomposition, ablation, or all."),
+        typer.Option(
+            "--method", help="Attribution method: critic, decomposition, ablation, or all."
+        ),
     ] = "all",
     output: Annotated[
         Optional[Path],
@@ -165,6 +168,7 @@ def diagnose(
     try:
         from aevyra_witness import AgentTrace
         import json
+
         trace_dict = json.loads(trace_file.read_text(encoding="utf-8"))
         trace = AgentTrace.from_dict(trace_dict)
     except Exception as exc:

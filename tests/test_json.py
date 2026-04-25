@@ -54,7 +54,7 @@ class TestExtractJson:
         assert result["result"] == "yes"
 
     def test_json_with_leading_and_trailing_prose(self):
-        text = "Sure! Here:\n\n{\"x\": 1}\n\nLet me know if you have questions."
+        text = 'Sure! Here:\n\n{"x": 1}\n\nLet me know if you have questions.'
         result = extract_json(text)
         assert result["x"] == 1
 
@@ -89,7 +89,7 @@ class TestExtractJson:
 
     def test_fenced_malformed_falls_through_to_brace_extraction(self):
         # Fence block is malformed, but raw text has a valid object.
-        text = "```json\nnot valid\n```\n\n{\"fallback\": true}"
+        text = '```json\nnot valid\n```\n\n{"fallback": true}'
         result = extract_json(text)
         assert result["fallback"] is True
 
