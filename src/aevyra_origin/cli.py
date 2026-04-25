@@ -304,7 +304,6 @@ def runs(
             else status
         )
         score_str = f"{row['score']:.3f}" if row["score"] is not None else "—"
-        completed_str = ",".join(row["completed_methods"]) or "—"
         typer.echo(
             f"{row['run_id']:<6}  {status_fmt:<12}  {row['method']:<14}  {score_str:<7}  "
             f"{row['llm_tokens_fmt']:<12}  {row['ablation_calls']:<11}  "
