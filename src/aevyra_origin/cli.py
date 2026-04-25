@@ -218,7 +218,9 @@ def diagnose(
                 typer.echo(f"Error: run '{resume_from}' not found in {store.runs_dir}", err=True)
                 raise typer.Exit(code=1)
             if run.is_complete():
-                typer.echo(f"Run {resume_from} is already complete. Use 'aevyra-origin runs' to inspect it.")
+                typer.echo(
+                    f"Run {resume_from} is already complete. Use 'aevyra-origin runs' to inspect it."
+                )
                 raise typer.Exit(code=0)
             typer.echo(f"Resuming run {run.run_id} from {run.path.name} ...")
         elif resume:
@@ -229,9 +231,7 @@ def diagnose(
             else:
                 ckpt = run.load_checkpoint()
                 done = ckpt.completed_methods if ckpt else []
-                typer.echo(
-                    f"Resuming run {run.run_id} — already completed: {done or 'none'}"
-                )
+                typer.echo(f"Resuming run {run.run_id} — already completed: {done or 'none'}")
         else:
             run = store.new_run()
 

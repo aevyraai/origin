@@ -73,7 +73,9 @@ class _AnthropicLLM:
         )
         usage = getattr(resp, "usage", None)
         if usage is not None:
-            self.tokens_used += getattr(usage, "input_tokens", 0) + getattr(usage, "output_tokens", 0)
+            self.tokens_used += getattr(usage, "input_tokens", 0) + getattr(
+                usage, "output_tokens", 0
+            )
         return resp.content[0].text
 
 
@@ -96,7 +98,9 @@ class _OpenAILLM:
         )
         usage = getattr(resp, "usage", None)
         if usage is not None:
-            self.tokens_used += getattr(usage, "prompt_tokens", 0) + getattr(usage, "completion_tokens", 0)
+            self.tokens_used += getattr(usage, "prompt_tokens", 0) + getattr(
+                usage, "completion_tokens", 0
+            )
         return resp.choices[0].message.content or ""
 
 

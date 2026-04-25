@@ -96,8 +96,7 @@ def _serialize_out(out: dict[str, Any]) -> dict[str, Any]:
     result = dict(out)
     if "culprits" in result:
         result["culprits"] = [
-            c.to_dict() if isinstance(c, NodeAttribution) else c
-            for c in result["culprits"]
+            c.to_dict() if isinstance(c, NodeAttribution) else c for c in result["culprits"]
         ]
     return result
 
@@ -107,8 +106,7 @@ def _deserialize_out(d: dict[str, Any]) -> dict[str, Any]:
     result = dict(d)
     if "culprits" in result:
         result["culprits"] = [
-            NodeAttribution.from_dict(c) if isinstance(c, dict) else c
-            for c in result["culprits"]
+            NodeAttribution.from_dict(c) if isinstance(c, dict) else c for c in result["culprits"]
         ]
     return result
 
@@ -279,6 +277,7 @@ class Origin:
             if run is None:
                 return
             from aevyra_origin.run_store import CheckpointState
+
             run.save_checkpoint(
                 CheckpointState(
                     run_id=run.run_id,

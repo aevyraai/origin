@@ -54,6 +54,7 @@ def _fmt_tokens(n: int) -> str:
         return f"{n / 1_000:.1f}K"
     return str(n)
 
+
 VALID_SEVERITIES: tuple[str, ...] = ("primary", "contributing", "minor")
 
 _SEVERITY_RANK = {"primary": 3, "contributing": 2, "minor": 1}
