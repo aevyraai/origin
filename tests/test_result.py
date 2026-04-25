@@ -176,7 +176,15 @@ class TestAttribution:
     def test_to_dict_shape(self):
         attr = _make_attribution()
         d = attr.to_dict()
-        assert set(d.keys()) == {"summary", "culprits", "method", "score", "raw", "llm_tokens", "ablation_calls"}
+        assert set(d.keys()) == {
+            "summary",
+            "culprits",
+            "method",
+            "score",
+            "raw",
+            "llm_tokens",
+            "ablation_calls",
+        }
         assert d["method"] == "critic"
         assert d["score"] == 0.3
         assert len(d["culprits"]) == 2
