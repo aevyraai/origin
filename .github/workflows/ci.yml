@@ -25,6 +25,7 @@ jobs:
         with:
           repository: aevyraai/witness
           path: witness
+          token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-python@v6
         with:
@@ -58,6 +59,7 @@ jobs:
         with:
           repository: aevyraai/witness
           path: witness
+          token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-python@v6
         with:
