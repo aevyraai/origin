@@ -37,22 +37,43 @@ from aevyra_origin.ablation import (
 
 
 def linear_trace() -> AgentTrace:
-    return AgentTrace(nodes=[
-        TraceNode("classify", id="a", input="ticket", output="billing"),
-        TraceNode("retrieve", id="r", input="billing", output="docs"),
-        TraceNode("answer", id="c", input="ticket+docs", output="reply", optimize=True),
-    ])
+    return AgentTrace(
+        nodes=[
+            TraceNode("classify", id="a", input="ticket", output="billing"),
+            TraceNode("retrieve", id="r", input="billing", output="docs"),
+            TraceNode("answer", id="c", input="ticket+docs", output="reply", optimize=True),
+        ]
+    )
 
 
 def dag_trace() -> AgentTrace:
-    return AgentTrace(nodes=[
-        TraceNode("plan", id="p1", kind=KIND_REASON, prompt_id="planner",
-                  step=1, input="q", output="call tools", optimize=True),
-        TraceNode("search", id="t1", kind=KIND_TOOL, parent_id="p1",
-                  input={"q": "x"}, output="result"),
-        TraceNode("plan", id="p2", kind=KIND_REASON, prompt_id="planner",
-                  step=2, input="ctx", output="respond", optimize=True),
-    ])
+    return AgentTrace(
+        nodes=[
+            TraceNode(
+                "plan",
+                id="p1",
+                kind=KIND_REASON,
+                prompt_id="planner",
+                step=1,
+                input="q",
+                output="call tools",
+                optimize=True,
+            ),
+            TraceNode(
+                "search", id="t1", kind=KIND_TOOL, parent_id="p1", input={"q": "x"}, output="result"
+            ),
+            TraceNode(
+                "plan",
+                id="p2",
+                kind=KIND_REASON,
+                prompt_id="planner",
+                step=2,
+                input="ctx",
+                output="respond",
+                optimize=True,
+            ),
+        ]
+    )
 
 
 def stub_runner(trace: AgentTrace, overrides: dict[str, Any]) -> AgentTrace:
@@ -60,11 +81,17 @@ def stub_runner(trace: AgentTrace, overrides: dict[str, Any]) -> AgentTrace:
     new_nodes = []
     for n in trace.nodes:
         if n.id in overrides:
-            new_nodes.append(TraceNode(
-                name=n.name, id=n.id, input=n.input,
-                output=overrides[n.id], kind=n.kind,
-                prompt_id=n.prompt_id, parent_id=n.parent_id,
-            ))
+            new_nodes.append(
+                TraceNode(
+                    name=n.name,
+                    id=n.id,
+                    input=n.input,
+                    output=overrides[n.id],
+                    kind=n.kind,
+                    prompt_id=n.prompt_id,
+                    parent_id=n.parent_id,
+                )
+            )
         else:
             new_nodes.append(n)
     return AgentTrace(nodes=new_nodes, ideal=trace.ideal)
@@ -72,12 +99,14 @@ def stub_runner(trace: AgentTrace, overrides: dict[str, Any]) -> AgentTrace:
 
 def judge_from_deltas(deltas: dict[str, float], baseline: float = 0.9):
     """Build a judge where ablating span id X drops the score by deltas[X]."""
+
     def judge(t: AgentTrace) -> float:
         s = baseline
         for n in t.nodes:
             if n.id in deltas and not n.output:
                 s -= deltas[n.id]
         return max(0.0, s)
+
     return judge
 
 
@@ -197,6 +226,7 @@ class TestHarmfulSpans:
     def test_harmful_span_appears_as_culprit(self):
         """A span whose removal *improves* the score is harmful."""
         trace = linear_trace()
+
         # "a" is harmful: ablating it improves score from 0.5 to 0.9
         def bad_judge(t: AgentTrace) -> float:
             for n in t.nodes:
@@ -220,6 +250,7 @@ class TestHarmfulSpans:
     def test_harmful_span_has_absolute_confidence(self):
         """Confidence should be based on |raw_delta|, not raw_delta."""
         trace = linear_trace()
+
         def harmful_judge(t: AgentTrace) -> float:
             for n in t.nodes:
                 if n.id == "a" and not n.output:
@@ -324,9 +355,11 @@ class TestCandidatesAndBudget:
     def test_budget_caps_number_of_runs(self):
         trace = linear_trace()
         call_count = {"n": 0}
+
         def counting_runner(t, overrides):
             call_count["n"] += 1
             return stub_runner(t, overrides)
+
         result = run_ablation(
             trace=trace,
             score=0.9,
@@ -375,6 +408,7 @@ class TestMinDelta:
 class TestFailureIsolation:
     def test_single_runner_failure_is_isolated(self, caplog):
         trace = linear_trace()
+
         def failing_runner(t: AgentTrace, overrides: dict) -> AgentTrace:
             if "a" in overrides:
                 raise RuntimeError("simulated failure for span a")
@@ -400,8 +434,10 @@ class TestFailureIsolation:
 
     def test_total_runner_failure_raises(self):
         trace = linear_trace()
+
         def always_fail(t, overrides):
             raise RuntimeError("always fails")
+
         with pytest.raises(AblationError, match="all .* ablation runs failed"):
             run_ablation(
                 trace=trace,
@@ -414,8 +450,10 @@ class TestFailureIsolation:
 
     def test_runner_returning_non_trace_raises(self):
         trace = linear_trace()
+
         def bad_runner(t, overrides):
             return "not an AgentTrace"
+
         with pytest.raises(AblationError, match="expected AgentTrace"):
             run_ablation(
                 trace=trace,
@@ -428,8 +466,10 @@ class TestFailureIsolation:
 
     def test_judge_returning_non_numeric_raises(self):
         trace = linear_trace()
+
         def bad_judge(t):
             return "not a number"
+
         with pytest.raises(AblationError, match="expected numeric"):
             run_ablation(
                 trace=trace,

@@ -52,10 +52,20 @@ from aevyra_witness.runtime import span, trace
 def stripe_lookup(customer_id: str) -> list[dict[str, Any]]:
     # Simulated result for the failing scenario: two identical charges.
     return [
-        {"id": "ch_001", "amount": 29.00, "currency": "usd",
-         "description": "Pro subscription", "date": "2026-04-15"},
-        {"id": "ch_002", "amount": 29.00, "currency": "usd",
-         "description": "Pro subscription", "date": "2026-04-15"},
+        {
+            "id": "ch_001",
+            "amount": 29.00,
+            "currency": "usd",
+            "description": "Pro subscription",
+            "date": "2026-04-15",
+        },
+        {
+            "id": "ch_002",
+            "amount": 29.00,
+            "currency": "usd",
+            "description": "Pro subscription",
+            "date": "2026-04-15",
+        },
     ]
 
 
@@ -78,7 +88,7 @@ def thread_search(customer_id: str) -> list[dict[str, Any]]:
 
 _TOOL_REGISTRY = {
     "stripe_lookup": stripe_lookup,
-    "kb_search":     kb_search,
+    "kb_search": kb_search,
     "thread_search": thread_search,
 }
 
@@ -92,7 +102,7 @@ def _planner_decide_tools(user_message: str) -> list[dict[str, Any]]:
     """Round-1 LLM call: planner emits the tool calls it wants run."""
     return [
         {"name": "stripe_lookup", "args": {"customer_id": "cus_42"}},
-        {"name": "kb_search",     "args": {"query": "duplicate charge refund"}},
+        {"name": "kb_search", "args": {"query": "duplicate charge refund"}},
         {"name": "thread_search", "args": {"customer_id": "cus_42"}},
     ]
 
