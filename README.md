@@ -21,7 +21,11 @@ Origin is the diagnosis stage in the [Aevyra](https://aevyra.ai) stack:
 Witness  →  captures what happened         (aevyra-witness)
 Verdict  →  judges it                      (aevyra-verdict)
 Origin   →  finds where it went wrong      (you are here)
-Reflex   →  fixes it                       (aevyra-reflex)
+           └─ fix_type="prompt"? → Reflex  (aevyra-reflex)
+           └─ fix_type="retrieval"?  → fix the index
+           └─ fix_type="tool_schema"? → fix the schema
+           └─ fix_type="routing"?    → fix the router
+           └─ fix_type="infrastructure"? → fix ops
 ```
 
 ## Install
