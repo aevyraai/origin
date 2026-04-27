@@ -478,6 +478,9 @@ def _merge(
     def key_of(c: NodeAttribution) -> str:
         return c.node_id or c.node_name
 
+    # Fix-type priority order: earlier = more actionable / specific.
+    _FIX_PRIORITY = ("prompt", "tool_schema", "retrieval", "routing", "infrastructure", "unknown")
+
     buckets: dict[str, dict[str, Any]] = {}
 
     for method, culprits in per_method.items():
@@ -493,6 +496,7 @@ def _merge(
                     "node_name": c.node_name,
                     "node_id": c.node_id,
                     "prompt_id": c.prompt_id,
+                    "fix_type_votes": [],
                 },
             )
             b["confidences"].append(c.confidence)
@@ -502,10 +506,16 @@ def _merge(
                 b["parts"].append(f"[{method}] {c.reasoning}")
             if c.prompt_id and not b["prompt_id"]:
                 b["prompt_id"] = c.prompt_id
+            b["fix_type_votes"].append(c.fix_type)
 
     merged: list[NodeAttribution] = []
     for info in buckets.values():
         conf = _corroborated_confidence(info["confidences"])
+        # Pick the highest-priority fix_type that any method agreed on.
+        votes = info["fix_type_votes"]
+        fix_type = min(
+            set(votes), key=lambda ft: _FIX_PRIORITY.index(ft) if ft in _FIX_PRIORITY else 99
+        )
         merged.append(
             NodeAttribution(
                 node_name=info["node_name"],
@@ -514,6 +524,7 @@ def _merge(
                 reasoning="\n".join(info["parts"]),
                 node_id=info["node_id"],
                 prompt_id=info["prompt_id"],
+                fix_type=fix_type,  # type: ignore[arg-type]
             )
         )
     merged.sort(key=lambda n: (-n.confidence, order.get(n.node_id or "", 1e9)))

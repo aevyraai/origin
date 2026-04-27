@@ -45,6 +45,16 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 Severity = Literal["primary", "contributing", "minor"]
+FixType = Literal["prompt", "tool_schema", "retrieval", "routing", "infrastructure", "unknown"]
+
+VALID_FIX_TYPES: tuple[str, ...] = (
+    "prompt",  # The prompt instructions or context need changing — Reflex can fix this.
+    "tool_schema",  # The tool's input schema is ambiguous or wrong — the LLM called it incorrectly.
+    "retrieval",  # The retrieval step fetched wrong, irrelevant, or missing docs.
+    "routing",  # The pipeline sent the query down the wrong branch or to the wrong tool.
+    "infrastructure",  # A transient or systemic issue: timeout, rate limit, auth error, quota.
+    "unknown",  # Origin could not determine the fix type from the available evidence.
+)
 
 
 def _fmt_tokens(n: int) -> str:
@@ -82,6 +92,16 @@ class NodeAttribution:
                     the trace. Enables rolling span-level blame up to
                     prompt-level for Reflex. ``None`` when the span has
                     no associated prompt (e.g. pure tool calls).
+        fix_type:   What kind of fix this failure requires. One of:
+                    ``"prompt"`` — the prompt instructions or context need
+                    changing (Reflex can act on this); ``"tool_schema"`` —
+                    the tool's input schema is ambiguous and the LLM called
+                    it wrong; ``"retrieval"`` — the retrieval step fetched
+                    wrong or missing docs; ``"routing"`` — the pipeline
+                    took the wrong branch or selected the wrong tool;
+                    ``"infrastructure"`` — a transient/systemic issue
+                    (timeout, auth, quota); ``"unknown"`` — Origin could
+                    not determine the fix type.
     """
 
     node_name: str
@@ -90,12 +110,15 @@ class NodeAttribution:
     reasoning: str
     node_id: str | None = None
     prompt_id: str | None = None
+    fix_type: FixType = "unknown"
 
     def __post_init__(self) -> None:
         if self.severity not in VALID_SEVERITIES:
             raise ValueError(f"severity must be one of {VALID_SEVERITIES}, got {self.severity!r}")
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(f"confidence must be in [0.0, 1.0], got {self.confidence!r}")
+        if self.fix_type not in VALID_FIX_TYPES:
+            raise ValueError(f"fix_type must be one of {VALID_FIX_TYPES}, got {self.fix_type!r}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +128,7 @@ class NodeAttribution:
             "reasoning": self.reasoning,
             "node_id": self.node_id,
             "prompt_id": self.prompt_id,
+            "fix_type": self.fix_type,
         }
 
     @classmethod
@@ -116,6 +140,7 @@ class NodeAttribution:
             reasoning=d.get("reasoning", ""),
             node_id=d.get("node_id"),
             prompt_id=d.get("prompt_id"),
+            fix_type=d.get("fix_type", "unknown"),
         )
 
 
@@ -273,7 +298,9 @@ class Attribution:
             label = c.node_name
             if c.node_id:
                 label = f"{c.node_name} (id={c.node_id})"
-            lines.append(f"  {i}. {label}  [{c.severity}, confidence={c.confidence:.2f}]")
+            lines.append(
+                f"  {i}. {label}  [{c.severity}, confidence={c.confidence:.2f}, fix={c.fix_type}]"
+            )
             lines.append(f"     {c.reasoning}")
 
         # If there's a prompt-level rollup worth showing, append it.
@@ -293,5 +320,7 @@ __all__ = [
     "NodeAttribution",
     "PromptAttribution",
     "Severity",
+    "FixType",
     "VALID_SEVERITIES",
+    "VALID_FIX_TYPES",
 ]

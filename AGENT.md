@@ -379,6 +379,11 @@ dumps `Attribution.to_json(indent=2)` to a file.
 
 ## Development
 
+> **TODO:** CI currently checks out `aevyra-witness` from source and installs it
+> via `pip install -e ./witness` because witness hasn't been published to PyPI yet.
+> Once the witness release is done, remove the extra checkout + install steps from
+> `.github/workflows/ci.yml` and let pip resolve `aevyra-witness>=0.1.0` normally.
+
 ```bash
 pip install -e ".[dev]"       # installs pytest, ruff, typer, anthropic, openai
 pytest tests/ -v

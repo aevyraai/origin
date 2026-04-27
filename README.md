@@ -4,12 +4,13 @@
 [![Security](https://github.com/aevyraai/origin/actions/workflows/security.yml/badge.svg)](https://github.com/aevyraai/origin/actions/workflows/security.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-**Why did my agent get that wrong?** Point Origin at your pipeline and a
-rubric; it runs the pipeline, grades it, and tells you which span(s) in
-the pipeline caused the failure — with severity, confidence, and
-reasoning grounded in the actual execution. You get back a ranked list
-of culprit spans with a one-paragraph summary, ready to hand to Reflex
-for a prompt fix.
+**Why did my agent fail — and what kind of fix does it need?** Point Origin
+at your pipeline and a rubric; it runs the pipeline, grades it, and diagnoses
+which span(s) caused the failure — with severity, confidence, reasoning, and a
+`fix_type` that tells you whether the problem lives in a prompt, a retrieval
+index, a tool schema, a routing decision, or infrastructure. You get back a
+ranked list of culprit spans with a one-paragraph summary and an actionable
+repair classification.
 
 Works with any LLM — Claude, OpenAI, OpenRouter, local Ollama or vLLM,
 or any OpenAI-compatible endpoint.
@@ -73,35 +74,60 @@ print(result.render())
 
 `diagnose_pipeline` runs your pipeline under a tracer, scores the
 captured trace with your judge, and invokes the attribution engine —
-all in one call. You get back a ranked list of culprit spans. No
-known-good reference output is required.
+all in one call. You get back a ranked list of culprit spans with a
+`fix_type` for each. No known-good reference output is required.
 
 `result.render()` prints something like:
 
 ```
-Attribution  method=all  score=0.31
-─────────────────────────────────────────────────────────────────────
-Summary: The retrieve span failed to surface the refund policy document,
-leaving the answer span without the grounding it needed. The classify
-span contributed by routing to the wrong topic, narrowing the retrieval
-scope before it even ran.
+Origin attribution  (method=all, score=0.31)
+  Summary: The retrieve span failed to surface the refund policy document,
+  leaving the answer span without the grounding it needed. The classify
+  span contributed by routing to the wrong topic, narrowing the retrieval
+  scope before it even ran.
 
-Culprits
-  1. retrieve       PRIMARY       confidence=0.89
+  1. retrieve (id=n2)  [primary, confidence=0.89, fix=retrieval]
      Returned generic FAQ results; the refund policy doc was not in the
      retrieved set despite being present in the index.
 
-  2. classify       CONTRIBUTING  confidence=0.44
+  2. classify (id=n1)  [contributing, confidence=0.44, fix=routing]
      Classified as "billing/general" rather than "billing/refund",
      causing the retriever to miss the policy-specific corpus.
 
-  3. answer         MINOR         confidence=0.18
+  3. answer (id=n3)  [minor, confidence=0.18, fix=prompt]
      Given the missing context, the answer defaulted to a generic
      apology rather than citing the 30-day refund window.
+
+  --- Prompt-level rollup (for Reflex) ---
+  prompt=answer_v1  [minor, confidence=0.18, spans=1]
 ```
+
+The `fix_type` tells you where to direct the repair effort — update the
+retrieval index, fix the routing classifier, or rewrite the prompt. Only
+spans with `fix_type="prompt"` are candidates for Reflex; the others
+need a different intervention.
 
 Don't have a Verdict metric? Pass any `Callable[[AgentTrace], float]`
 as `judge=` — including a lambda that wraps your own evaluator.
+
+## What Origin diagnoses
+
+Not all agent failures are prompt failures. Origin classifies each culprit
+span into one of six fix types:
+
+| `fix_type` | What it means | Who fixes it |
+|---|---|---|
+| `prompt` | The instructions or context in the prompt need changing | Reflex |
+| `tool_schema` | The tool's input schema is ambiguous; the LLM called it wrong | Schema redesign |
+| `retrieval` | The retrieval step fetched wrong, irrelevant, or missing docs | Index / embedding fix |
+| `routing` | The pipeline sent the query down the wrong branch or tool | Routing logic fix |
+| `infrastructure` | A transient or systemic issue: timeout, rate limit, auth error | Ops / infra fix |
+| `unknown` | Origin could not determine the fix type | Manual review |
+
+This matters because Reflex can only help with `fix_type="prompt"`. When
+Origin tells you the problem is in the retrieval index or the tool schema,
+you know immediately where to look — and that rewriting the prompt won't
+help.
 
 ## Three on-ramps
 
@@ -188,6 +214,8 @@ c.confidence                # float in [0, 1]
 c.reasoning                 # str — grounded in the trace
 c.node_id                   # str | None — span id (required for DAG traces with repeated names)
 c.prompt_id                 # str | None — prompt identity; used by by_prompt() rollup
+c.fix_type                  # "prompt" | "tool_schema" | "retrieval" | "routing"
+                            #           | "infrastructure" | "unknown"
 ```
 
 ### `Attribution.by_prompt()` → `list[PromptAttribution]`
@@ -196,6 +224,7 @@ For DAG traces where the same prompt fires at many call sites (a planner at
 step 1, step 2, step 3, ...), Reflex needs to know which *prompt* to update.
 `by_prompt()` rolls span-level blame up to the prompt level — mean confidence
 across spans sharing a `prompt_id`, max severity, concatenated reasoning.
+Only culprits with `fix_type="prompt"` are meaningful inputs to Reflex.
 
 ```python
 for pa in result.by_prompt():
@@ -244,12 +273,13 @@ v0 ships with three attribution methods:
 
 - **LLM-as-critic** (`method="critic"`) — one LLM call. The LLM reads the
   rubric, score, and full trace, and returns a ranked list of culprit spans
-  with severity, confidence, and reasoning. Fast, general, works for any
-  rubric. Best for single-cause failures.
+  with severity, confidence, reasoning, and fix_type. Fast, general, works
+  for any rubric. Best for single-cause failures.
 - **Score decomposition** (`method="decomposition"`) — one LLM call. The
   LLM enumerates the rubric's underlying criteria, attributes each criterion
   to the span(s) responsible, and aggregates per-span blame across failed
-  criteria. Better at surfacing distributed failures.
+  criteria. Better at surfacing distributed failures. fix_type is determined
+  by majority vote across criteria.
 - **Ablation** (`method="ablation"`) — causal. For each candidate span,
   replaces its output with a neutral placeholder, re-runs the pipeline via a
   user-supplied `runner`, and re-scores via the `judge`. The only method
@@ -261,7 +291,8 @@ v0 ships with three attribution methods:
   is supplied; otherwise it's silently skipped. Spans named by multiple
   methods receive a corroboration bonus — merged confidence lies between
   the arithmetic mean and the max, weighted toward the max by how many
-  methods agreed.
+  methods agreed. fix_type is resolved to the most specific type across
+  methods (e.g. `"retrieval"` wins over `"unknown"`).
 
 ### Ablation quick start
 
@@ -288,9 +319,16 @@ span ids.
 
 ## Interop with Reflex
 
-Any Reflex `LLM` works directly:
+`by_prompt()` on the result gives Reflex the prompt-level view it needs.
+Only culprits with `fix_type="prompt"` are handed to Reflex — the others
+(retrieval, routing, infrastructure, tool_schema) need a different repair.
 
 ```python
+# What Reflex consumes:
+for pa in result.by_prompt():
+    print(pa.prompt_id, pa.severity, pa.confidence)
+
+# Wire Origin's LLM to Reflex's LLM type:
 from aevyra_reflex import LLM
 from aevyra_origin.llm import LLMFn
 

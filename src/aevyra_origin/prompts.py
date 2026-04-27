@@ -70,7 +70,30 @@ distinguish between three failure modes and say which one applies:
 Error codes on MCP tool calls (``[code=...]``) usually point at the
 tool or server, not the reasoning. Transient codes (e.g. auth, quota,
 timeout) are infrastructure issues — mention them but weight them as
-contributing rather than as primary prompt-level failures."""
+contributing rather than as primary prompt-level failures.
+
+For every culprit you identify, also classify its ``fix_type`` — what
+kind of change would actually fix this failure:
+
+  "prompt"         — The span's prompt instructions, system message, or
+                     context are wrong or incomplete. Changing the prompt
+                     would fix this. Reflex can act on this.
+  "tool_schema"    — The tool's input schema is ambiguous, underspecified,
+                     or has confusing parameter names. The LLM called the
+                     tool with wrong arguments not because the reasoning
+                     was bad, but because the schema was misleading.
+  "retrieval"      — The retrieval step fetched wrong, irrelevant, or
+                     missing documents. The fix is in the retrieval index,
+                     query strategy, or chunking — not the prompt.
+  "routing"        — The pipeline sent the query to the wrong branch,
+                     tool, or sub-agent. The fix is in the routing logic
+                     or classifier, not in any individual span's prompt.
+  "infrastructure" — A transient or systemic issue outside the model's
+                     control: timeout, rate limit, auth failure, quota
+                     exhaustion, network error. Flag it; no prompt fix
+                     will help.
+  "unknown"        — You cannot determine the fix type from the available
+                     trace evidence. Use this sparingly."""
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +135,9 @@ For each culprit span, provide:
   span is actually responsible given the evidence in the trace.
 - reasoning: one paragraph grounded in the trace. Quote specific
   inputs or outputs when helpful. Do not restate the rubric.
+- fix_type: one of "prompt", "tool_schema", "retrieval", "routing",
+  "infrastructure", "unknown". What kind of change would fix this
+  failure. See the trace guide above for definitions.
 
 Also provide a one-paragraph ``summary`` giving the overall diagnosis
 in plain language — what went wrong, end to end.
@@ -137,6 +163,7 @@ no markdown fences, no commentary. Exactly this shape:
       "node_name": "<exact name from trace>",
       "severity": "primary" | "contributing" | "minor",
       "confidence": 0.0-1.0,
+      "fix_type": "prompt" | "tool_schema" | "retrieval" | "routing" | "infrastructure" | "unknown",
       "reasoning": "<one paragraph, grounded in trace content>"
     }}
   ]
@@ -210,6 +237,7 @@ no markdown fences, no commentary. Exactly this shape:
           "node_id": "<exact id from trace>",
           "node_name": "<exact name from trace>",
           "contribution": 0.0-1.0,
+          "fix_type": "prompt" | "tool_schema" | "retrieval" | "routing" | "infrastructure" | "unknown",
           "reasoning": "<one sentence, grounded in trace content>"
         }}
       ]
