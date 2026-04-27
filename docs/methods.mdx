@@ -1,0 +1,124 @@
+---
+title: Attribution methods
+description: Critic, decomposition, and ablation — how each works and when to use it.
+---
+
+Origin ships three attribution methods. You can run any one individually or
+combine them with `method="all"` (the default).
+
+## LLM-as-critic (`method="critic"`)
+
+**One LLM call.** The critic reads the rubric, the judge score, an optional
+ideal output, and the full execution trace, then returns a ranked list of
+culprit spans with severity, confidence, reasoning, and `fix_type`.
+
+**Best for:** fast diagnosis, single-cause failures, and traces where one span
+clearly dominates the failure.
+
+**Limitations:** the critic sees the trace as text and can be misled by a
+span that *looks* suspicious but is not the root cause. It has no causal
+guarantee.
+
+```python
+result = origin.diagnose(trace=trace, score=0.2, rubric=rubric, method="critic")
+```
+
+## Score decomposition (`method="decomposition"`)
+
+**One LLM call.** The decomposer enumerates the rubric's underlying criteria
+(e.g. "acknowledged the charge", "cited the policy", "confirmed the refund"),
+attributes each criterion to the span(s) responsible, and aggregates per-span
+blame across all failed criteria. `fix_type` is determined by majority vote
+across the criteria a span is responsible for.
+
+**Best for:** rubrics that bundle multiple requirements, distributed failures
+where two or three spans each contributed, and cases where you want a richer
+breakdown by criterion.
+
+**Limitations:** still an LLM judgment — the decomposition of the rubric into
+criteria can be imperfect.
+
+```python
+result = origin.diagnose(trace=trace, score=0.2, rubric=rubric, method="decomposition")
+```
+
+## Ablation (`method="ablation"`)
+
+**Causal.** For each candidate span, Origin replaces its output with a neutral
+placeholder (`"null"` by default, or the ideal output if `ablation_placeholder="ideal"`),
+replays the pipeline via your `runner`, and re-scores via your `judge`. A
+large score drop when span X is ablated means span X is genuinely causal —
+removing its real output materially changed the outcome.
+
+**Best for:** confirming that a span is the root cause (not just suspicious),
+ruling out false positives, and pipelines where LLM confabulation is a risk.
+
+**Limitations:** requires a deterministic runner and a judge callable. Each
+ablated span costs one runner invocation + one judge call. Use
+`ablation_budget=N` to cap total invocations.
+
+```python
+def my_runner(trace: AgentTrace, overrides: dict) -> AgentTrace:
+    # Replay with overrides[span_id] forced as that span's output.
+    ...
+
+result = origin.diagnose(
+    trace=trace, score=0.2, rubric=rubric,
+    method="ablation",
+    runner=my_runner,
+)
+```
+
+### Ablation cost control
+
+```python
+result = diagnose_pipeline(
+    my_agent, question,
+    judge=judge, rubric=rubric, llm=llm, runner=my_runner,
+    ablation_budget=5,          # cap at 5 runner+judge invocations
+)
+```
+
+The raw on-ramp (`Origin.diagnose`) also exposes `candidates=["span_a", "span_b"]`
+to restrict the ablation sweep to specific span ids.
+
+## Combined (`method="all"`)
+
+Runs critic and decomposition always (two LLM calls total). Ablation
+participates when a `runner` is supplied; it is silently skipped otherwise.
+
+Results are merged per span:
+
+- **Confidence** — spans named by multiple methods receive a corroboration
+  bonus. Merged confidence lies between the arithmetic mean and the max of the
+  individual confidences, weighted toward the max by the number of methods that
+  agreed. A span all three methods agree on gets the highest possible merged
+  confidence.
+- **Severity** — the max severity across methods wins.
+- **fix_type** — resolved to the most specific type across methods using a
+  priority ordering: `prompt` > `tool_schema` > `retrieval` > `routing` >
+  `infrastructure` > `unknown`. If critic says `retrieval` and decomposition
+  says `unknown`, the merged fix_type is `retrieval`.
+
+```python
+result = diagnose_pipeline(
+    my_agent, question,
+    judge=judge, rubric=rubric, llm=llm,
+    runner=my_runner,   # enables ablation
+    method="all",
+)
+```
+
+## Choosing a method
+
+| | Critic | Decomposition | Ablation |
+|---|---|---|---|
+| LLM calls | 1 | 1 | 0 (+ runner×N) |
+| Runner required | No | No | Yes |
+| Causal guarantee | No | No | Yes |
+| Multi-criterion rubrics | Partial | Yes | Partial |
+| Cost | Low | Low | Medium–High |
+
+Start with `method="all"` (without a runner) for most use cases — two LLM calls,
+no runner needed, corroboration bonus when both methods agree. Add a runner when
+you want ablation's causal confirmation.
