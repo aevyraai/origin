@@ -1,0 +1,179 @@
+---
+title: Quick start
+description: Diagnose your first pipeline failure in under 5 minutes.
+---
+
+## Install
+
+```bash
+pip install aevyra-origin[anthropic]
+```
+
+This also installs [aevyra-witness](https://github.com/aevyraai/witness) for
+tracing. Python 3.10+.
+
+## Set your API key
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+OpenAI and OpenRouter are also supported — see [Providers](/origin/providers).
+
+## Instrument your pipeline
+
+Add `@span` decorators from `aevyra_witness.runtime` to the functions you want
+Origin to reason about. Each decorated function becomes a node in the execution
+trace:
+
+```python
+from aevyra_witness.runtime import span
+
+@span("classify")
+def classify(question: str) -> str:
+    # Route the question to a topic
+    ...
+
+@span("retrieve")
+def retrieve(topic: str) -> list[str]:
+    # Fetch relevant documents
+    ...
+
+@span("answer", optimize=True, prompt_id="answer_v1")
+def answer(question: str, docs: list[str]) -> str:
+    # Generate the final response
+    ...
+
+def my_agent(question: str) -> str:
+    topic = classify(question)
+    docs = retrieve(topic)
+    return answer(question, docs)
+```
+
+The `optimize=True` and `prompt_id=` flags on `answer` tell Origin (and
+downstream Reflex) that this span's behaviour is controlled by a prompt that can
+be rewritten. Spans without these flags — tools, retrievers, routers — can still
+be diagnosed; their `fix_type` just won't be `"prompt"`.
+
+## Run the diagnosis
+
+```python
+from aevyra_origin import diagnose_pipeline
+from aevyra_origin.llm import anthropic_llm
+from aevyra_origin.judges import judge_from_verdict
+from aevyra_verdict import LLMJudge
+from aevyra_verdict.providers import get_provider
+
+judge = judge_from_verdict(LLMJudge(judge_provider=get_provider("anthropic")))
+
+result = diagnose_pipeline(
+    my_agent,
+    "I was charged twice — how do I get a refund?",
+    judge=judge,
+    rubric="Accurate, grounded in the policy docs, and addresses the user's concern.",
+    llm=anthropic_llm(),
+)
+
+print(result.render())
+```
+
+`diagnose_pipeline` handles everything: runs your agent under a Witness tracer,
+captures the trace, scores it with your judge, and runs all three attribution
+methods. No separate tracing step, no pre-captured trace file needed.
+
+## Read the output
+
+```
+Origin attribution  (method=all, score=0.31)
+  Summary: The retrieve span failed to surface the refund policy document,
+  leaving the answer span without the grounding it needed.
+
+  1. retrieve (id=n2)  [primary, confidence=0.89, fix=retrieval]
+     Returned generic FAQ results; the refund policy doc was not in the
+     retrieved set despite being present in the index.
+
+  2. classify (id=n1)  [contributing, confidence=0.44, fix=routing]
+     Classified as "billing/general" rather than "billing/refund",
+     causing the retriever to miss the policy-specific corpus.
+
+  3. answer (id=n3)  [minor, confidence=0.18, fix=prompt]
+     Given the missing context, the answer defaulted to a generic apology
+     rather than citing the 30-day refund window.
+
+  --- Prompt-level rollup (for Reflex) ---
+  prompt=answer_v1  [minor, confidence=0.18, spans=1]
+```
+
+Each culprit tells you:
+- **severity** — whether this span was the primary cause or a contributing factor
+- **confidence** — how certain Origin is (0.0–1.0)
+- **fix_type** — where the repair effort belongs
+
+In this example, the real problem is the retrieval index (`fix=retrieval`) and a
+routing misclassification (`fix=routing`). Rewriting the `answer` prompt
+won't help much — fixing the retriever will.
+
+## Without a Verdict judge
+
+Pass any `Callable[[AgentTrace], float]` as `judge=`:
+
+```python
+def my_judge(trace) -> float:
+    output = trace.nodes[-1].output
+    return 1.0 if "refund" in str(output).lower() else 0.0
+
+result = diagnose_pipeline(my_agent, question, judge=my_judge, rubric=rubric, llm=llm)
+```
+
+## Using a pre-captured trace
+
+Already have a trace? Use the raw on-ramp:
+
+```python
+from aevyra_origin import Origin
+from aevyra_origin.llm import anthropic_llm
+
+origin = Origin(llm=anthropic_llm())
+result = origin.diagnose(trace=my_trace, score=0.31, rubric=rubric)
+print(result.render())
+```
+
+Or via the CLI:
+
+```bash
+aevyra-origin diagnose trace.json \
+  --score 0.31 \
+  --rubric rubric.txt \
+  --llm-provider anthropic \
+  --llm-model claude-sonnet-4-5
+```
+
+## Routing results to Reflex
+
+`result.by_prompt()` rolls span-level blame up to the prompt level — one entry
+per `prompt_id`, with mean confidence and max severity across all call sites:
+
+```python
+for pa in result.by_prompt():
+    print(f"{pa.prompt_id}  severity={pa.severity}  confidence={pa.confidence:.2f}")
+```
+
+Only `fix_type="prompt"` culprits are meaningful inputs to Reflex — if Origin
+says `fix=retrieval`, update the index rather than the prompt.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Tutorial" icon="book-open" href="/origin/tutorial-support-triage">
+    Full walkthrough of a plan-act-respond agent
+  </Card>
+  <Card title="Methods" icon="flask" href="/origin/methods">
+    When to use critic, decomposition, and ablation
+  </Card>
+  <Card title="API reference" icon="code" href="/origin/api/attribution">
+    Full Attribution and NodeAttribution reference
+  </Card>
+  <Card title="Reflex" icon="wand-magic-sparkles" href="/reflex/introduction">
+    Automatically rewrite culprit prompts
+  </Card>
+</CardGroup>

@@ -40,7 +40,7 @@ from aevyra_witness import AgentTrace, TraceNode
 from aevyra_origin._json import JSONParseError, extract_json
 from aevyra_origin.llm import LLMFn
 from aevyra_origin.prompts import format_decomposition_prompt
-from aevyra_origin.result import NodeAttribution
+from aevyra_origin.result import VALID_FIX_TYPES, NodeAttribution
 
 logger = logging.getLogger(__name__)
 
@@ -204,9 +204,10 @@ def _aggregate(
     if not failed:
         return []
 
-    # Per-span blame / reasoning, keyed on node_id.
+    # Per-span blame / reasoning / fix_type, keyed on node_id.
     blame: dict[str, float] = {}
     reasons: dict[str, list[str]] = {}
+    fix_type_votes: dict[str, list[str]] = {}
     span_lookup: dict[str, TraceNode] = {n.id: n for n in trace.nodes}
 
     for c in failed:
@@ -215,6 +216,10 @@ def _aggregate(
             blame[key] = blame.get(key, 0.0) + n["contribution"]
             if n["reasoning"]:
                 reasons.setdefault(key, []).append(f"[{c['criterion']}] {n['reasoning']}")
+            ft = str(n.get("fix_type", "unknown")).strip().lower()
+            if ft not in VALID_FIX_TYPES:
+                ft = "unknown"
+            fix_type_votes.setdefault(key, []).append(ft)
 
     n_failed = len(failed)
     # Preserve trace order for ties.
@@ -236,6 +241,9 @@ def _aggregate(
             # Shouldn't happen — spans were validated during parse — but
             # degrade gracefully rather than crashing aggregation.
             continue
+        # Majority-vote fix_type across criteria; prefer earlier VALID_FIX_TYPES on ties.
+        votes = fix_type_votes.get(node_id, ["unknown"])
+        fix_type = max(set(votes), key=lambda ft: (votes.count(ft), -VALID_FIX_TYPES.index(ft)))
         culprits.append(
             NodeAttribution(
                 node_name=span.name,
@@ -244,6 +252,7 @@ def _aggregate(
                 reasoning="  ".join(reasons.get(node_id, [])) or "(no per-criterion reasoning)",
                 node_id=span.id or None,
                 prompt_id=span.prompt_id,
+                fix_type=fix_type,  # type: ignore[arg-type]
             )
         )
 

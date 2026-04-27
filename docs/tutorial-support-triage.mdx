@@ -1,482 +1,226 @@
 ---
-title: "Tutorial: diagnosing a multi-tool support agent"
-description: Find out why a customer-support agent denied a refund it should have approved — a complete walkthrough of Origin on a DAG trace with parallel MCP tool calls, multi-step planning, and a responder stage.
+title: "Tutorial: Support triage agent"
+description: Diagnose a plan-act-respond pipeline that gives the wrong refund decision — and learn which span to fix and why.
 ---
 
-## Why judges alone aren't enough for agentic systems
+This tutorial walks through diagnosing a real failure in a customer-support
+triage agent. The agent is given a duplicate-charge complaint and incorrectly
+denies the refund. You'll see:
 
-A judge tells you *that* a run went wrong — a score of 0.2, a thumbs
-down, a failed rubric criterion. It does not tell you *where* the run
-went wrong. For a linear chain (prompt → model → answer), "where" and
-"what" are the same thing: the prompt is the only thing to change. For
-an agentic system with several tool calls, multiple reasoning steps,
-and a responder, the question explodes.
+- how Origin identifies the culprit span
+- how `fix_type` tells you the failure is in the **prompt** (not the retriever)
+- how the prompt-level rollup feeds directly into Reflex
 
-```mermaid
-flowchart TD
-    Q["User question"] --> P1["plan (round 1)\n(planner prompt)"]
-    P1 -->|"decides tool calls"| T1["stripe_lookup\n(MCP)"]
-    P1 --> T2["kb_search\n(MCP)"]
-    P1 --> T3["thread_search\n(MCP)"]
-    T1 -->|"charges"| P2["plan (round 2)\n(planner prompt)"]
-    T2 -->|"policy"| P2
-    T3 -->|"prior threads"| P2
-    P2 -->|"eligibility decision"| R["respond\n(responder prompt)"]
-    R --> A["Final reply"]
-
-    style Q fill:#6E3FF3,color:#fff,stroke:none
-    style A fill:#6E3FF3,color:#fff,stroke:none
-    style P1 fill:#A78BFA,color:#fff,stroke:none
-    style P2 fill:#A78BFA,color:#fff,stroke:none
-    style R fill:#A78BFA,color:#fff,stroke:none
-    style T1 fill:#f0f0f0,stroke:#ccc
-    style T2 fill:#f0f0f0,stroke:#ccc
-    style T3 fill:#f0f0f0,stroke:#ccc
-```
-
-When the reply is wrong, every span on that diagram is a candidate
-culprit. Did the planner pick the wrong tools? Did one of the MCP
-servers return bad data? Did the round-2 planner misread the data it
-did get? Did the responder soften a correct decision into the wrong
-reply? A judge score of 0.2 is consistent with every one of those
-failure modes, and the fix for each is different.
-
-Without a way to attribute the failure to a specific span, teams end
-up guessing — rewriting the system prompt because it's the obvious
-knob, even when the real problem is three steps downstream.
-
-## How Origin handles this
-
-Origin takes an `AgentTrace` — the structured record of everything the
-pipeline did — plus the judge's score and its rubric, and returns a
-ranked list of culprit spans with severity, confidence, and reasoning
-grounded in the trace. Three attribution methods run by default:
-
-- **LLM-as-critic.** One LLM call. Reads the rubric, score, and full
-  trace and nominates culprits. Fast, general, good at single-cause
-  failures.
-- **Score decomposition.** One LLM call. Enumerates the rubric's
-  underlying criteria, attributes each failed criterion to the spans
-  responsible, then aggregates per-span blame across criteria. Better
-  at distributed failures (a chain where several spans each contribute
-  a little).
-- **Ablation.** Causal. For each candidate span, replaces its output
-  with a neutral placeholder, re-runs the pipeline via a user-supplied
-  runner, and re-scores via the judge. A large score delta means the
-  span really is responsible, independent of whether an LLM thinks it
-  looks suspicious.
-
-`method="all"` (the default) runs every available method and merges
-the results. Spans that multiple methods nominate get a corroboration
-bonus — single-method blame stays honest, multi-method agreement is
-rewarded. You see exactly which method said what, so you can decide
-whether to trust the consensus or investigate a disagreement.
-
-The rest of this tutorial walks a real run from a six-span DAG trace
-to a prompt-level rollup that points Reflex at a single prompt.
-
-## The task
-
-A customer-support triage agent handles a subscription billing
-question:
-
-> "Hey, I was just charged $29 twice on the same day for my
-> subscription — I can see both in my bank statement. Can you issue
-> a refund?"
-
-The agent has three MCP tools available — `stripe_lookup` (the
-payments DB), `kb_search` (the internal knowledge base), and
-`thread_search` (prior support threads for this user) — and runs a
-two-round plan → act → respond loop. Round 1 decides which tools to
-call, round 2 decides refund eligibility from the tool results, and
-the responder drafts the reply.
-
-The failure we're diagnosing: the agent denies the refund. The stripe
-lookup returns two identical $29 charges on the same date (same
-amount, same description, same day), and the KB article explicitly
-states that such duplicates are eligible for automatic refund. The
-round-2 planner nonetheless confabulates a "prorated upgrade charge"
-to explain away the duplicate, and the responder dutifully drafts a
-polite "no refund needed" reply.
-
-The judge scores the trace **0.2** — correct-looking prose, wrong
-decision, no grounding.
+The full code is in
+[`examples/support_triage/`](https://github.com/aevyraai/origin/tree/main/examples/support_triage)
+in the origin repo.
 
 ## The pipeline
 
-The full pipeline lives at `examples/support_triage/pipeline.py`.
-What matters for the tutorial is the instrumentation — every span the
-attribution engine sees:
+The triage agent is a plan-act-respond loop:
 
-```python title="examples/support_triage/pipeline.py"
+```
+plan (round 1)   → planner decides which tools to call
+  ├── stripe_lookup   → pull the user's recent charges
+  ├── kb_search       → fetch the refund policy
+  └── thread_search   → prior support threads
+plan (round 2)   → planner reads tool results and decides eligibility
+respond          → responder drafts the user-facing reply
+```
+
+Both `plan` spans share `prompt_id="planner"` — they represent two firings
+of the same planner prompt. The `respond` span has its own
+`prompt_id="responder"`.
+
+```python
+from aevyra_witness.runtime import span, trace
 from aevyra_witness import KIND_REASON, KIND_TOOL
-from aevyra_witness.runtime import span
-
 
 @span("stripe_lookup", kind=KIND_TOOL)
-def stripe_lookup(customer_id): ...
+def stripe_lookup(customer_id): ...   # returns two identical charges
 
 @span("kb_search", kind=KIND_TOOL)
-def kb_search(query): ...
+def kb_search(query): ...             # returns the refund policy doc
 
 @span("thread_search", kind=KIND_TOOL)
-def thread_search(customer_id): ...
+def thread_search(customer_id): ...   # returns no prior complaints
 
-
-def triage_agent(user_message: str) -> str:
-    # Round 1: planner decides which tools to dispatch, then dispatches them.
+def triage_agent(user_message):
     with span("plan", kind=KIND_REASON, prompt_id="planner", optimize=True) as p1:
-        p1.input  = user_message
-        tool_calls = _planner_decide_tools(user_message)
-        p1.output = {"tool_calls": tool_calls}
+        ...  # round 1: dispatch tools
 
-        # Tool spans opened inside the plan span parent under it automatically.
-        tool_results = {tc["name"]: _TOOL_REGISTRY[tc["name"]](**tc["args"])
-                        for tc in tool_calls}
-
-    # Round 2: planner decides eligibility from tool results.
     with span("plan", kind=KIND_REASON, prompt_id="planner", optimize=True) as p2:
-        p2.input  = {"user_message": user_message, "tool_results": tool_results}
-        decision  = _planner_decide_eligibility(user_message, tool_results)
-        p2.output = decision
+        ...  # round 2: decide eligibility  ← THIS IS WHERE THE BUG IS
 
-    # Respond: draft the user-facing reply.
     with span("respond", kind=KIND_REASON, prompt_id="responder") as r:
-        r.input  = {"user_message": user_message, "decision": decision}
-        reply    = _responder_draft(user_message, decision)
-        r.output = reply
-
-    return reply
+        ...  # draft the reply
 ```
 
-A few decisions worth calling out:
+## The bug
 
-- **The tool calls are dispatched inside the round-1 plan span.**
-  `@span` and `with span(...)` track the active span through Python's
-  call stack (and across `await` for async code). Calling a
-  `@span`-decorated tool while `p1` is open on the stack parents the
-  tool call under `p1` with no extra wiring. In a real agent you'd
-  dispatch the tools concurrently — `asyncio.gather` or a thread
-  pool; the runtime's `contextvars` carry the parent id across both.
+The `kb_search` tool returns the correct refund policy:
 
-- **Both plan spans share `prompt_id="planner"`.** One prompt fired
-  at two call sites. When Origin attributes blame to either span,
-  `Attribution.by_prompt()` rolls it up under the single planner
-  prompt — exactly what Reflex needs to optimize the right prompt
-  once.
+> *"Duplicate charges posted within 24 hours of one another are automatically
+> eligible for a refund."*
 
-- **Both plan spans are `optimize=True`.** This tells downstream
-  tools (dashboard, Reflex) that the `planner` prompt is an
-  optimization target. The responder is left as `optimize=False` for
-  now — we want to see the attribution before deciding whether its
-  prompt needs updating.
+The `stripe_lookup` tool returns two identical `$29.00` charges on the same
+day. The evidence is unambiguous.
 
-Running `python examples/support_triage/pipeline.py` prints the
-captured trace. The "LLM view" is what the critic will read:
+Despite this, the planner (round 2) confabulates an explanation:
 
-```
-=== AGENT TRACE ===
+> *"One charge is the monthly Pro subscription renewal; the other is a
+> prorated upgrade charge posted on the same day."*
 
-Node 1 — plan (reason, id=n0)
-  Prompt: planner
-  Input:   Hey, I was just charged $29 twice...
-  Output:
-    {"tool_calls": [
-      {"name": "stripe_lookup", "args": {"customer_id": "cus_42"}},
-      {"name": "kb_search",     "args": {"query": "duplicate charge refund"}},
-      {"name": "thread_search", "args": {"customer_id": "cus_42"}}
-    ]}
+It decides `eligible_for_refund: False`. The responder dutifully tells the
+user no refund is needed. The answer is wrong.
 
-  Node 1.1 — stripe_lookup (tool, id=n1)
-    Output:
-      [{"id":"ch_001","amount":29.0,"description":"Pro subscription","date":"2026-04-15"},
-       {"id":"ch_002","amount":29.0,"description":"Pro subscription","date":"2026-04-15"}]
+## Running the diagnosis
 
-  Node 1.2 — kb_search (tool, id=n2)
-    Output:
-      {"title":"Refund policy: duplicate charges",
-       "body":"Duplicate charges posted within 24 hours ... are automatically
-               eligible for a refund. Support staff may issue the refund without
-               further approval."}
-
-  Node 1.3 — thread_search (tool, id=n3)
-    Output: []
-
-Node 2 — plan (reason, id=n4)
-  Prompt: planner
-  Output:
-    {"diagnosis": "One charge is the monthly Pro subscription renewal; the
-                   other is a prorated upgrade charge posted on the same day.",
-     "eligible_for_refund": false,
-     "rationale": "Two distinct line items, not a duplicate."}
-
-Node 3 — respond (reason, id=n5)
-  Prompt: responder
-  Output: "Thanks for reaching out! I took a look at your account and the two
-           charges you're seeing are actually separate line items..."
-```
-
-The evidence the critic has to work with is clear: stripe shows two
-identical charges, the policy makes them refund-eligible, and node 2
-nonetheless concludes they're distinct line items.
-
-## The judge
-
-```python title="examples/support_triage/diagnose.py"
-def judge(trace: AgentTrace) -> float:
-    respond_node = next((n for n in trace.nodes if n.name == "respond"), None)
-    if respond_node is None or not isinstance(respond_node.output, str):
-        return 0.0
-    reply = respond_node.output.lower()
-    if "refund" in reply and ("queued" in reply or "processed" in reply):
-        return 1.0
-    if "no refund" in reply or "not a duplicate" in reply or "upgrade charge" in reply:
-        return 0.2
-    return 0.6
-```
-
-Any `Callable[[AgentTrace], float]` is a valid judge. For a real
-evaluation you'd wrap a Verdict `LLMJudge` via
-`judge_from_verdict(...)`; for this tutorial the hand-written judge
-keeps the tutorial run self-contained and deterministic. The rubric
-that Origin's attribution methods see is separate — see
-`judge.md` for the human-readable version.
-
-## Running Origin
-
-The `diagnose.py` entry point wires the pipeline, judge, runner, and
-LLM together:
-
-```python title="examples/support_triage/diagnose.py"
+```python
 from aevyra_origin import diagnose_pipeline
 from aevyra_origin.llm import anthropic_llm
-from pipeline import triage_agent
 
 result = diagnose_pipeline(
-    triage_agent, question,
+    triage_agent,
+    "I was charged $29 twice on the same day — can you issue a refund?",
     judge=judge,
-    rubric=RUBRIC,
-    llm=anthropic_llm(model="claude-sonnet-4-5"),
-    ideal=ideal,
-    runner=runner,         # enables causal ablation
-    method="all",          # critic + decomposition + ablation, merged
+    rubric=(
+        "Acknowledge the duplicate charge, cite the refund policy, and "
+        "confirm the refund is being issued. Refusing or reframing the "
+        "charges must score low."
+    ),
+    llm=anthropic_llm(),
+    runner=runner,    # enables causal ablation
+    method="all",
 )
 
 print(result.render())
 ```
 
-`diagnose_pipeline` opens a Witness tracer, runs `triage_agent(question)`
-inside it, hands the captured trace to the `judge`, and then dispatches
-into the attribution engine. Three LLM calls happen under the hood — one
-for the critic, one for decomposition, and a handful for ablation's
-re-scoring — plus one run of the pipeline per ablation candidate.
+The judge scores the trace at **0.2** — the agent refused a clearly valid
+refund.
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-python examples/support_triage/diagnose.py
-```
-
-## The attribution
+## What Origin finds
 
 ```
 Origin attribution  (method=all, score=0.200)
-  Summary: The round-2 planner (n4) mis-labeled two identical stripe charges as
-  a "prorated upgrade" and denied a refund that the policy makes automatic.
-  The responder faithfully relayed the decision, amplifying the error.
+  Summary: The planner (round 2) misread the tool evidence and incorrectly
+  concluded the charges were distinct line items rather than a duplicate.
+  The refund policy was retrieved correctly; the failure is in how the
+  planner interpreted the data.
 
-  1. plan (id=n4)  [primary, confidence=0.91]
-     [critic] stripe_lookup returned two charges with identical amount,
-     description, and date. kb_search returned a policy that explicitly
-     covers this case as refund-eligible. Node 4 nonetheless concluded
-     "one subscription renewal + one prorated upgrade" with no supporting
-     evidence in the trace. This is the single decision that flipped the
-     outcome.
-     [decomposition] [correct_eligibility] Failed. This span owns the
-     eligibility decision and produced the wrong one.
-     [decomposition] [grounded_in_tools] Failed. The stated rationale
-     contradicts the tool output.
-     [ablation] score 0.200 → 0.800  (+0.600). Forcing a neutral output at
-     this span lets the downstream responder fall back to the safer default
-     and the refund gets issued.
+  1. plan (id=p2)  [primary, confidence=0.91, fix=prompt]
+     Round-2 planner confabulated an upgrade charge that does not appear
+     in the stripe_lookup results, overriding clear evidence of a
+     duplicate and reaching an incorrect eligibility decision.
 
-  2. respond (id=n5)  [contributing, confidence=0.41]
-     [critic] Took the round-2 decision at face value and drafted a reply
-     that restates the fabricated "upgrade charge" claim to the user.
-     A defensive responder would flag the mismatch between the policy and
-     the decision before committing to prose.
-     [ablation] score 0.200 → 0.400  (+0.200). Small but real — a better
-     responder can partially recover from a bad planner decision.
+  2. respond (id=r1)  [minor, confidence=0.21, fix=prompt]
+     The responder faithfully executed the planner's wrong decision.
+     Fixing the planner will fix this span as a side effect.
 
   --- Prompt-level rollup (for Reflex) ---
-  prompt=planner    [primary, confidence=0.91, spans=1]
-  prompt=responder  [contributing, confidence=0.41, spans=1]
+  prompt=planner    [primary, confidence=0.91, spans=2]
+  prompt=responder  [minor, confidence=0.21, spans=1]
 ```
 
-Three observations that matter:
+Both culprits have `fix_type="prompt"`. The retrieval worked — `kb_search`
+returned exactly the right policy. The problem is that the planner prompt
+doesn't anchor the LLM firmly enough to the tool results it receives: the
+model ignored the evidence and invented a narrative instead.
 
-- **Three methods, one primary culprit.** Critic, decomposition, and
-  ablation all point at `plan (id=n4)`. Decomposition adds structure —
-  it names the two rubric criteria this span failed — and ablation
-  puts a causal number on it: removing its output raises the score by
-  0.6 points out of 1.0.
+This is something Reflex can fix.
 
-- **The contributing culprit is real but small.** The responder is
-  flagged by critic and ablation but not by decomposition (it passes
-  the rubric criteria it owns). The confidence is much lower, and the
-  ablation delta confirms: a better responder can recover somewhat,
-  but fixing the planner is a bigger lever.
+## What it means for each fix_type
 
-- **Prompt-level rollup names the prompt to update.** Even though
-  round 1 and round 2 are separate spans, they share
-  `prompt_id="planner"` — `by_prompt()` surfaces a single
-  `planner` entry for Reflex to optimize. A fix applied to the
-  planner prompt benefits every call site.
+This scenario landed entirely on `fix=prompt`. But the same pipeline could
+surface different failure types depending on what went wrong:
 
-## What this buys you with Reflex
+| Scenario | Culprit | fix_type |
+|---|---|---|
+| kb_search returns the wrong doc | `kb_search` | `retrieval` |
+| stripe_lookup sent wrong customer_id | `stripe_lookup` | `tool_schema` |
+| Planner ignores evidence | `plan` | `prompt` |
+| stripe_lookup timed out | `stripe_lookup` | `infrastructure` |
+| Pipeline called wrong tool entirely | routing logic | `routing` |
 
-Origin's output is the input Reflex needs. The prompt-level rollup
-names the `planner` prompt, and the attribution reasoning — the
-concrete claim that the planner "confabulated an upgrade charge that
-the stripe data does not support" — is exactly the kind of
-failure-mode-grounded signal that Reflex's prompt-update step can
-turn into a targeted revision. You don't have to guess which prompt
-to change, or what the change should address. You get a specific
-diagnosis and a specific target.
+When Origin returns `fix=retrieval`, you fix the index. When it returns
+`fix=prompt`, you hand the result to Reflex. Origin tells you which is which
+so you don't spend time on the wrong lever.
 
-Without Origin, the rubric score alone tells you nothing about which
-prompt to optimize. Rewriting the system prompt because "the agent is
-wrong" is a common default, and for a pipeline like this one it's
-usually the wrong default — the responder prompt was working fine.
+## The prompt-level rollup for Reflex
 
-## Key takeaways
+`result.by_prompt()` aggregates span-level blame up to the prompt level —
+useful when the same prompt fires at multiple steps:
 
-**Judges tell you *that*, Origin tells you *where*.** A judge score
-of 0.2 on a DAG trace is consistent with many different failure
-modes. Origin's attribution reduces the search space from "any span
-in the DAG" to a ranked list with concrete reasoning — usually one
-primary culprit with high confidence.
+```python
+for pa in result.by_prompt():
+    print(f"prompt={pa.prompt_id}  severity={pa.severity}  confidence={pa.confidence:.2f}")
+    print(f"  spans: {[s.node_id for s in pa.spans]}")
+    print(f"  reasoning: {pa.reasoning[:120]}...")
+```
 
-**The three methods corroborate each other.** Single-method blame
-can be noisy; multi-method agreement is load-bearing. The
-`method="all"` merge formula rewards corroboration without silencing
-single-method signals — you see every method's opinion, and you see
-which ones agreed.
+```
+prompt=planner    severity=primary  confidence=0.91
+  spans: ['p1', 'p2']
+  reasoning: [p2] Round-2 planner confabulated an upgrade charge...
+prompt=responder  severity=minor    confidence=0.21
+  spans: ['r1']
+  reasoning: [r1] The responder faithfully executed the planner's wrong decision...
+```
 
-**Ablation is the causal one.** Critic and decomposition are LLM
-calls reading the trace. Ablation actually re-runs the pipeline with
-a span's output replaced and measures the score delta. When the
-critic nominates a suspect and ablation confirms a large delta, the
-evidence is causal, not just suggestive. Ablation costs
-`O(candidates)` extra pipeline runs — manageable for a trace with a
-dozen spans, expensive for hundreds. Cap it with `ablation_budget=N`.
+Both plan spans (`p1`, `p2`) share `prompt_id="planner"`. Reflex updates that
+prompt once and every call site benefits.
 
-**Span attribution composes with prompt-level rollup.** Blame lands
-on spans, but Reflex optimizes prompts. `Attribution.by_prompt()`
-bridges the two: mean confidence across spans sharing a
-`prompt_id`, max severity, concatenated reasoning. For DAG traces
-with repeated prompts — the common case — this rollup is what turns
-a diagnosis into an actionable optimization target.
+## Adding causal ablation
 
-**The pipeline stays framework-agnostic.** Origin and Witness hold
-Python 3.10+ as their only assumption. The tools can be MCP, native
-functions, async HTTP calls, whatever — as long as each is wrapped in
-`@span`, the runtime captures it, and the critic can reason about it.
-Adding a new tool or a new reasoning step doesn't require any
-changes to Origin.
+The runner replays the pipeline with one span's output replaced by a neutral
+placeholder. A large score drop confirms the span is genuinely causal:
 
-## Run it yourself
+```python
+from aevyra_witness import AgentTrace, TraceNode
 
-The pipeline, judge, and diagnose entry point are in
-`examples/support_triage/`. Pick whichever LLM provider you have
-credentials for — the diagnose script auto-detects Anthropic,
-OpenAI, or OpenRouter:
+def runner(original: AgentTrace, overrides: dict) -> AgentTrace:
+    new_nodes = [
+        TraceNode(
+            name=n.name, input=n.input,
+            output=overrides[n.id] if n.id in overrides else n.output,
+            id=n.id, parent_id=n.parent_id, kind=n.kind,
+            optimize=n.optimize, prompt_id=n.prompt_id,
+            metadata=dict(n.metadata),
+        )
+        for n in original.nodes
+    ]
+    return AgentTrace(nodes=new_nodes, ideal=original.ideal, metadata=dict(original.metadata))
+```
+
+Pass `runner=runner` to `diagnose_pipeline` and it runs ablation alongside
+the LLM methods. Ablating `p2` (the round-2 planner) causes the score to
+drop to near 0, confirming it as the primary cause — not just a suspicion.
+
+## Running the example
 
 ```bash
-pip install aevyra-origin[anthropic]    # or [openai]
-
-# Any one of these:
+cd examples/support_triage
 export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
-export OPENROUTER_API_KEY=sk-or-...
-
-# Smoke-test the pipeline first (no LLM needed — the stubs are deterministic):
-python examples/support_triage/pipeline.py
-
-# Then run Origin on the failing trace:
-python examples/support_triage/diagnose.py
+python diagnose.py
 ```
 
-### Plugging in a real LLM pipeline
+The pipeline stubs are deterministic — no LLM tokens are burned by the
+pipeline itself. Only the attribution LLM call costs tokens.
 
-The stubbed planner and responder are deterministic fakes so the
-tutorial's narrative is reproducible without burning tokens. Swap
-them for real provider calls by replacing the three functions at the
-top of `pipeline.py`:
+## Next steps
 
-```python
-from openai import OpenAI
-client = OpenAI(base_url="https://openrouter.ai/api/v1",
-                api_key=os.environ["OPENROUTER_API_KEY"])
-
-def _planner_decide_tools(user_message: str) -> list[dict]:
-    resp = client.chat.completions.create(
-        model="anthropic/claude-sonnet-4-5",
-        messages=[{"role": "system", "content": PLANNER_PROMPT},
-                  {"role": "user",   "content": user_message}],
-        tools=TOOL_SCHEMAS, tool_choice="auto",
-        temperature=0.0,     # required for reproducibility under ablation
-    )
-    return [{"name": tc.function.name,
-             "args": json.loads(tc.function.arguments)}
-            for tc in resp.choices[0].message.tool_calls]
-```
-
-Two caveats for real LLMs:
-
-- **Ablation needs determinism.** Origin re-runs the pipeline with
-  span outputs overridden; if the LLMs are sampling at non-zero
-  temperature, the delta attributed to the ablation is partly just
-  sampling noise. Either pin `temperature=0.0` or cache the LLM calls
-  so replays are deterministic.
-
-- **MCP clients need to be re-entrant.** Ablation calls your runner
-  multiple times within a single `diagnose_pipeline` invocation. If
-  your MCP servers hold long-lived auth tokens or rate-limit
-  aggressively, give the runner a cached client or a shared
-  connection pool.
-
-### Plugging in a Verdict judge
-
-To score with Verdict instead of the hand-written judge, wrap the
-Verdict `Metric` with `judge_from_verdict`:
-
-```python
-from aevyra_verdict import LLMJudge
-from aevyra_verdict.providers import get_provider
-from aevyra_origin.judges import judge_from_verdict
-
-verdict_judge = judge_from_verdict(
-    LLMJudge(judge_provider=get_provider("anthropic")),
-    # The defaults already pull the last root span's output and the
-    # first root span's input — good enough for most pipelines.
-)
-```
-
-Verdict's `ScoreResult.score` is already 0..1, so nothing else changes.
-
-### What to try next
-
-- **Increase the ablation budget.** Pass `ablation_budget=None` (the
-  default) to ablate every eligible span, or `ablation_budget=3` for
-  a fast sanity pass on longer traces.
-- **Use `placeholder="ideal"` for ablation.** Answers "would a
-  perfect output here have saved the run?" rather than "does this
-  span carry any signal?". Requires `ideal` to be set on the trace.
-- **Rerun with the planner fixed.** Edit the `_planner_decide_eligibility`
-  stub to return `"eligible_for_refund": True` and run
-  `diagnose.py` again. The judge score jumps to 1.0 and the
-  attribution becomes empty — exactly as it should be when there's
-  no failure to attribute.
-- **Read `result.raw["captured_trace"]`.** It's a dict form of the
-  full `AgentTrace` — useful for dashboards, logging, or feeding
-  into Reflex.
+<CardGroup cols={2}>
+  <Card title="Methods" icon="flask" href="/origin/methods">
+    When ablation beats critic, and when it doesn't
+  </Card>
+  <Card title="API reference" icon="code" href="/origin/api/attribution">
+    Full Attribution and NodeAttribution reference
+  </Card>
+  <Card title="Reflex quickstart" icon="wand-magic-sparkles" href="/reflex/quickstart">
+    Feed Origin's output to Reflex to rewrite the planner prompt
+  </Card>
+  <Card title="Witness" icon="eye" href="/witness/introduction">
+    How traces are captured and structured
+  </Card>
+</CardGroup>

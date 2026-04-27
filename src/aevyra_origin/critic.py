@@ -38,7 +38,7 @@ from aevyra_witness import AgentTrace
 from aevyra_origin._json import JSONParseError, extract_json
 from aevyra_origin.llm import LLMFn
 from aevyra_origin.prompts import format_critic_prompt
-from aevyra_origin.result import NodeAttribution, VALID_SEVERITIES
+from aevyra_origin.result import NodeAttribution, VALID_FIX_TYPES, VALID_SEVERITIES
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,12 @@ def _normalize(
         confidence = _clamp(confidence, 0.0, 1.0)
 
         reasoning = str(c.get("reasoning", "")).strip()
+        fix_type = str(c.get("fix_type", "unknown")).strip().lower()
+        if fix_type not in VALID_FIX_TYPES:
+            logger.warning(
+                "culprit #%d has unrecognised fix_type %r; defaulting to 'unknown'", i, fix_type
+            )
+            fix_type = "unknown"
 
         culprits.append(
             NodeAttribution(
@@ -174,6 +180,7 @@ def _normalize(
                 reasoning=reasoning,
                 node_id=node.id or None,
                 prompt_id=node.prompt_id,
+                fix_type=fix_type,  # type: ignore[arg-type]
             )
         )
 

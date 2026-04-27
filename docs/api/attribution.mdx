@@ -1,0 +1,140 @@
+---
+title: Attribution API
+description: Attribution, NodeAttribution, and PromptAttribution reference.
+---
+
+## Attribution
+
+The full diagnostic result for one trace. Returned by `diagnose_pipeline` and
+`Origin.diagnose`.
+
+```python
+from aevyra_origin import Attribution
+```
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `summary` | `str` | One-paragraph human-readable overview of why the trace failed |
+| `culprits` | `list[NodeAttribution]` | Ranked list of culprit spans, sorted by confidence descending |
+| `method` | `str` | Attribution method(s) used: `"critic"`, `"decomposition"`, `"ablation"`, or `"all"` |
+| `score` | `float` | The judge score being explained (typically 0.0–1.0) |
+| `raw` | `dict` | Method-level raw outputs for debugging |
+| `llm_tokens` | `int` | Total LLM tokens consumed by the critic and decomposition methods |
+| `ablation_calls` | `int` | Number of runner+judge invocations made during ablation |
+
+### Methods
+
+#### `top_culprit() → NodeAttribution | None`
+
+The highest-confidence culprit, or `None` if there are none.
+
+#### `primary_culprits() → list[NodeAttribution]`
+
+All culprits with `severity == "primary"`.
+
+#### `by_prompt() → list[PromptAttribution]`
+
+Roll span-level blame up to the prompt level. For each distinct `prompt_id`
+referenced by the culprits, aggregates the spans that share it: mean confidence,
+max severity, concatenated reasoning. Culprits with no `prompt_id` are skipped.
+
+This is the view Reflex consumes — it tells you which prompt to update and how
+confident Origin is that the update will help. Only culprits with
+`fix_type="prompt"` are meaningful inputs to Reflex.
+
+```python
+for pa in result.by_prompt():
+    print(pa.prompt_id, pa.severity, f"{pa.confidence:.2f}")
+```
+
+#### `render() → str`
+
+Multi-line human-readable rendering suitable for CLI output. Includes culprit
+list with severity/confidence/fix_type and the prompt-level rollup.
+
+#### `to_json(**kwargs) → str`
+
+JSON serialization. Accepts `json.dumps` keyword arguments (e.g. `indent=2`).
+
+#### `to_dict() → dict`
+
+Returns a plain dict. Roundtrippable via `Attribution.from_dict(d)`.
+
+---
+
+## NodeAttribution
+
+One span's share of the blame for a trace's failure.
+
+```python
+from aevyra_origin import NodeAttribution
+```
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `node_name` | `str` | Human-readable name of the culprit span; matches a `name` in the trace |
+| `severity` | `Severity` | `"primary"`, `"contributing"`, or `"minor"` |
+| `confidence` | `float` | Blame confidence, 0.0–1.0 |
+| `reasoning` | `str` | One-paragraph explanation grounded in the trace |
+| `node_id` | `str \| None` | Unique span id from the trace; required when names repeat in a DAG |
+| `prompt_id` | `str \| None` | Prompt identity copied from the trace; enables `by_prompt()` rollup |
+| `fix_type` | `FixType` | What kind of fix this failure requires (see below) |
+
+### fix_type values
+
+| Value | Meaning |
+|---|---|
+| `"prompt"` | The prompt's instructions or context need changing — Reflex can act on this |
+| `"tool_schema"` | The tool's input schema is ambiguous; the LLM called it incorrectly |
+| `"retrieval"` | The retrieval step fetched wrong, irrelevant, or missing documents |
+| `"routing"` | The pipeline sent the query to the wrong branch or tool |
+| `"infrastructure"` | Transient or systemic issue: timeout, rate limit, auth error, quota |
+| `"unknown"` | Origin could not determine the fix type from available evidence |
+
+### Methods
+
+#### `to_dict() → dict`
+
+Serializes to a plain dict. Roundtrippable via `NodeAttribution.from_dict(d)`.
+
+---
+
+## PromptAttribution
+
+Aggregated blame rolled up to the prompt level. Returned by
+`Attribution.by_prompt()`.
+
+```python
+from aevyra_origin import PromptAttribution
+```
+
+### Properties
+
+| Property | Type | Description |
+|---|---|---|
+| `prompt_id` | `str` | The prompt identity from the trace |
+| `severity` | `Severity` | Max severity across the spans sharing this prompt |
+| `confidence` | `float` | Mean confidence across those spans, bounded to [0, 1] |
+| `spans` | `list[NodeAttribution]` | Underlying per-span attributions, ordered by confidence descending |
+| `reasoning` | `str` | Concatenated reasoning from all contributing spans, each prefixed with the span's node label |
+
+### Methods
+
+#### `to_dict() → dict`
+
+Serializes to a plain dict.
+
+---
+
+## Type aliases
+
+```python
+from aevyra_origin import Severity, FixType, VALID_SEVERITIES, VALID_FIX_TYPES
+
+Severity = Literal["primary", "contributing", "minor"]
+FixType  = Literal["prompt", "tool_schema", "retrieval", "routing", "infrastructure", "unknown"]
+```

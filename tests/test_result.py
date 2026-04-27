@@ -97,6 +97,7 @@ class TestNodeAttribution:
             "reasoning": "Bad output.",
             "node_id": "n2",
             "prompt_id": "responder",
+            "fix_type": "unknown",
         }
 
     def test_from_dict_round_trip(self):

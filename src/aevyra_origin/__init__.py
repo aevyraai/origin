@@ -50,8 +50,10 @@ from aevyra_origin.diagnose import Origin, VALID_METHODS, diagnose
 from aevyra_origin.pipeline import Pipeline, PipelineError, diagnose_pipeline
 from aevyra_origin.result import (
     Attribution,
+    FixType,
     NodeAttribution,
     PromptAttribution,
+    VALID_FIX_TYPES,
     VALID_SEVERITIES,
 )
 from aevyra_origin.run_store import CheckpointState, DiagnoseRun, DiagnoseStore
@@ -73,6 +75,8 @@ __all__ = [
     "PipelineError",
     "PromptAttribution",
     "Runner",
+    "FixType",
+    "VALID_FIX_TYPES",
     "VALID_METHODS",
     "VALID_PLACEHOLDERS",
     "VALID_SEVERITIES",

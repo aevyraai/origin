@@ -11,16 +11,37 @@
 Usage:
     python examples/support_triage/diagnose.py
 
-This script is the companion to ``pipeline.py``. It wires everything
-together:
+This script is the companion to ``pipeline.py``. It diagnoses *why* the
+triage agent gives the wrong refund decision — and tells you what kind of
+fix is needed.
+
+The pipeline is a plan-act-respond loop:
+
+    plan (round 1)         — planner dispatches tools
+      ├── stripe_lookup    — pull recent charges
+      ├── kb_search        — fetch the refund policy
+      └── thread_search    — prior support threads
+    plan (round 2)         — planner decides eligibility ← the bug lives here
+    respond                — responder drafts the reply
+
+The bug: the round-2 planner ignores clear evidence (two identical charges,
+an explicit refund policy) and confabulates an upgrade charge. Origin surfaces
+``plan (round 2)`` as the primary culprit with ``fix_type="prompt"`` — the
+planner prompt needs to anchor the LLM to its tool results rather than letting
+it confabulate. This is something Reflex can act on.
+
+If instead the retriever had returned the wrong document, Origin would return
+``fix_type="retrieval"`` and you'd fix the index — not the prompt.
+
+Steps:
 
     1. Instrument + run the pipeline under a Witness tracer
        (``diagnose_pipeline`` handles this).
     2. Score the trace with a user-supplied judge.
     3. Dispatch to Origin's three attribution methods.
     4. Wire up a runner for causal ablation.
-    5. Print the attribution, plus the prompt-level rollup Reflex would
-       consume.
+    5. Print the attribution with fix_type, plus the prompt-level rollup
+       Reflex would consume.
 
 The ablation runner rebuilds a trace with ``overrides[span_id]`` applied
 to the matching span's output. In a real pipeline you'd re-run the
@@ -167,3 +188,57 @@ if __name__ == "__main__":
     print()
     print(f"Score: {result.score:.3f}")
     print(f"Pipeline reply: {result.raw['pipeline_output']!r}")
+
+    # -----------------------------------------------------------------------
+    # Fix-type summary
+    # -----------------------------------------------------------------------
+    #
+    # fix_type tells you where the repair effort belongs:
+    #
+    #   "prompt"         → the span's prompt needs rewriting (Reflex can help)
+    #   "retrieval"      → the retrieval index returned wrong/missing docs
+    #   "tool_schema"    → the tool's input schema led the LLM to call it wrong
+    #   "routing"        → the pipeline dispatched to the wrong branch/tool
+    #   "infrastructure" → timeout, rate limit, auth error, or quota issue
+    #   "unknown"        → Origin couldn't determine the fix from the trace
+    #
+    # In this scenario the planner confabulates despite having correct tool
+    # results — so both culprits should be fix_type="prompt".  If kb_search
+    # had returned the wrong document you'd see fix_type="retrieval" instead.
+
+    print()
+    print("=== Fix-type breakdown ===")
+    for c in result.culprits:
+        label = c.node_id or c.node_name
+        print(
+            f"  [{label}]  severity={c.severity}  fix={c.fix_type}  confidence={c.confidence:.2f}"
+        )
+
+    prompt_culprits = [c for c in result.culprits if c.fix_type == "prompt"]
+    other_culprits = [c for c in result.culprits if c.fix_type != "prompt"]
+
+    print()
+    if prompt_culprits:
+        print(
+            f"  → {len(prompt_culprits)} prompt fix(es) — Reflex can rewrite "
+            f"{', '.join(c.prompt_id or c.node_name for c in prompt_culprits if c.prompt_id)}"
+        )
+    if other_culprits:
+        for c in other_culprits:
+            print(
+                f"  → fix_type={c.fix_type!r} on '{c.node_name}' — prompt rewriting won't help here"
+            )
+
+    # -----------------------------------------------------------------------
+    # Prompt-level rollup — what Reflex would consume
+    # -----------------------------------------------------------------------
+
+    by_prompt = result.by_prompt()
+    if by_prompt:
+        print()
+        print("=== Prompt-level rollup (for Reflex) ===")
+        for pa in by_prompt:
+            print(
+                f"  prompt={pa.prompt_id}  severity={pa.severity}  "
+                f"confidence={pa.confidence:.2f}  spans={len(pa.spans)}"
+            )
