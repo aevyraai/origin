@@ -290,7 +290,7 @@ if __name__ == "__main__":
         elif rest.startswith("done") and _current_spinner:
             sp = _current_spinner.pop()
             sp.__exit__(None, None, None)
-            sys.stderr.write(f"          done\n\n")
+            sys.stderr.write("          done\n\n")
         elif msg == "merging results ...":
             sys.stderr.write("Step 4/4  Merging results ...\n")
 
