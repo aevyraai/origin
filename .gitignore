@@ -45,4 +45,5 @@ results.json
 best_prompt*.txt
 best_prompt*.md
 .reflex/
+.origin/
 /tmp/

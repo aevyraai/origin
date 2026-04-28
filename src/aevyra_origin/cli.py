@@ -21,6 +21,16 @@ import sys
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
+
+def _default_run_dir() -> Path:
+    """Return <repo-root>/.origin, falling back to cwd/.origin if not in a git repo."""
+    here = Path.cwd()
+    for parent in [here, *here.parents]:
+        if (parent / ".git").exists():
+            return parent / ".origin"
+    return here / ".origin"
+
+
 try:
     import typer
 except ImportError:
@@ -172,7 +182,7 @@ def diagnose(
         Optional[Path],
         typer.Option(
             "--run-dir",
-            help="Directory for run history and checkpoints. Defaults to .origin/ in cwd.",
+            help="Directory for run history and checkpoints. Defaults to .origin/ at the repo root.",
         ),
     ] = None,
     resume: Annotated[
@@ -267,31 +277,29 @@ def diagnose(
         raise typer.Exit(code=1)
 
     # --- Resolve run (checkpointing / resume) --------------------------------
-    run = None
-    if run_dir is not None or resume or resume_from:
-        store = DiagnoseStore(root=run_dir or ".origin")
-        if resume_from:
-            run = store.get_run(resume_from)
-            if run is None:
-                typer.echo(f"Error: run '{resume_from}' not found in {store.runs_dir}", err=True)
-                raise typer.Exit(code=1)
-            if run.is_complete():
-                typer.echo(
-                    f"Run {resume_from} is already complete. Use 'aevyra-origin runs' to inspect it."
-                )
-                raise typer.Exit(code=0)
-            typer.echo(f"Resuming run {run.run_id} from {run.path.name} ...")
-        elif resume:
-            run = store.find_incomplete_run()
-            if run is None:
-                typer.echo("No interrupted run found. Starting a new run.")
-                run = store.new_run()
-            else:
-                ckpt = run.load_checkpoint()
-                done = ckpt.completed_methods if ckpt else []
-                typer.echo(f"Resuming run {run.run_id} — already completed: {done or 'none'}")
-        else:
+    store = DiagnoseStore(root=run_dir if run_dir is not None else _default_run_dir())
+    if resume_from:
+        run = store.get_run(resume_from)
+        if run is None:
+            typer.echo(f"Error: run '{resume_from}' not found in {store.runs_dir}", err=True)
+            raise typer.Exit(code=1)
+        if run.is_complete():
+            typer.echo(
+                f"Run {resume_from} is already complete. Use 'aevyra-origin runs' to inspect it."
+            )
+            raise typer.Exit(code=0)
+        typer.echo(f"Resuming run {run.run_id} from {run.path.name} ...")
+    elif resume:
+        run = store.find_incomplete_run()
+        if run is None:
+            typer.echo("No interrupted run found. Starting a new run.")
             run = store.new_run()
+        else:
+            ckpt = run.load_checkpoint()
+            done = ckpt.completed_methods if ckpt else []
+            typer.echo(f"Resuming run {run.run_id} — already completed: {done or 'none'}")
+    else:
+        run = store.new_run()
 
     # --- Run attribution ------------------------------------------------------
     typer.echo(f"Analyzing with: {model_label}", err=True)
@@ -344,9 +352,12 @@ def diagnose(
 @app.command()
 def runs(
     run_dir: Annotated[
-        Path,
-        typer.Option("--run-dir", help="Run history directory. Defaults to .origin/ in cwd."),
-    ] = Path(".origin"),
+        Optional[Path],
+        typer.Option(
+            "--run-dir",
+            help="Run history directory. Defaults to .origin/ at the repo root.",
+        ),
+    ] = None,
 ) -> None:
     """List all past diagnostic runs with their status and token usage.
 
@@ -357,7 +368,7 @@ def runs(
     """
     from aevyra_origin.run_store import DiagnoseStore
 
-    store = DiagnoseStore(root=run_dir)
+    store = DiagnoseStore(root=run_dir if run_dir is not None else _default_run_dir())
     rows = store.list_runs()
 
     if not rows:
