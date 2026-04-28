@@ -31,18 +31,18 @@ classifiers = [
 
 dependencies = [
     "aevyra-witness>=0.1.0",
+    "anthropic>=0.30",      # default attribution model (Claude) — included out of the box
 ]
 
 [project.optional-dependencies]
-# LLM backend extras — install what you use. Default is Anthropic.
-anthropic = ["anthropic>=0.30"]
-openai    = ["openai>=2.31.0"]
-all       = ["anthropic>=0.30", "openai>=2.31.0"]
+# openai covers OpenAI, OpenRouter, Together, Groq, Ollama, vLLM, and any
+# other OpenAI-compatible endpoint.
+openai = ["openai>=2.31.0"]
+all    = ["openai>=2.31.0"]
 dev = [
     "pytest>=9.0.3",
     "ruff>=0.4",
     "typer>=0.24.1",
-    "anthropic>=0.30",
     "openai>=2.31.0",
 ]
 
