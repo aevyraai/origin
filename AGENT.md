@@ -15,7 +15,7 @@ Origin   →  finds where it went wrong      (this package)
 Reflex   →  fixes it                       (aevyra-reflex)
 ```
 
-v0 ships with three attribution methods (LLM-as-critic, score decomposition,
+Origin ships with three attribution methods (LLM-as-critic, score decomposition,
 and causal ablation) and a Python API that handles full DAG traces
 (N-step reasoning with M-parallel tools). The CLI and test suite are built.
 
@@ -31,7 +31,8 @@ who capture traces some other way.
 ```
 src/aevyra_origin/
 ├── __init__.py          # Public API exports
-├── result.py            # Attribution, NodeAttribution, PromptAttribution
+├── result.py            # Attribution, NodeAttribution, PromptAttribution,
+│                        # FixType, VALID_FIX_TYPES
 ├── llm.py               # LLMFn type + anthropic_llm / openai_llm factories
 ├── prompts.py           # CRITIC_PROMPT, DECOMPOSITION_PROMPT, formatters
 ├── _json.py             # extract_json() — tolerant JSON parser
@@ -42,6 +43,8 @@ src/aevyra_origin/
 │                        # AblationError, Runner, Judge, VALID_PLACEHOLDERS
 ├── diagnose.py          # Origin class + top-level diagnose() convenience
 ├── pipeline.py          # Turnkey — diagnose_pipeline(), PipelineError, Pipeline
+├── run_store.py         # Run history — DiagnoseStore, DiagnoseRun,
+│                        # CheckpointState
 └── judges.py            # Verdict adapter — judge_from_verdict(),
                          # default_response_from_trace, default_messages_from_trace
 ```
@@ -53,11 +56,14 @@ Origin, diagnose                         # raw on-ramp
 diagnose_pipeline                        # turnkey on-ramp (wraps Witness runtime + Origin)
 Attribution, NodeAttribution,            # result types
 PromptAttribution
+FixType, VALID_FIX_TYPES,               # fix classification
 VALID_METHODS, VALID_SEVERITIES,         # string constants
 VALID_PLACEHOLDERS
 CriticError, DecompositionError,         # method-specific exceptions
 AblationError, PipelineError
 Pipeline, Runner, Judge                  # callable type aliases
+DiagnoseStore, DiagnoseRun,              # run history / checkpointing
+CheckpointState
 ```
 
 From `aevyra_origin.judges` (kept off the top-level surface to avoid an
@@ -259,6 +265,7 @@ guess which span the LLM meant.
 - `severity` — "primary" | "contributing" | "minor"
 - `confidence` — float in [0.0, 1.0]
 - `reasoning` — one paragraph, grounded in trace content
+- `fix_type` — what kind of fix is needed: "prompt" | "tool_schema" | "retrieval" | "routing" | "infrastructure" | "unknown"
 - `node_id` — optional span id (required when names repeat)
 - `prompt_id` — optional prompt identity, copied from the span
 
@@ -342,6 +349,14 @@ live at the top of the files that need them.
   custom `extract_response` / `extract_messages` overrides; a live
   `aevyra_verdict.ExactMatch` integration block gated by
   `pytest.importorskip`.
+- **`test_run_store.py`** — `DiagnoseStore`: sequential run IDs, directory
+  naming convention (`001_YYYY-MM-DDTHH-MM-SS`), auto-creation, `get_run`
+  by id, `find_incomplete_run` (most recent interrupted, skips completed),
+  `list_runs` (newest-first, all row fields, token formatting). `DiagnoseRun`:
+  config round-trip, checkpoint atomic write (no `.tmp` left behind),
+  checkpoint round-trip, result round-trip, all status transitions
+  (running / interrupted / completed). `CheckpointState`: timestamp
+  auto-fill on save, overwrite.
 
 ### CLI (`src/aevyra_origin/cli.py`)
 
@@ -361,6 +376,26 @@ aevyra-origin diagnose TRACE_FILE \
 (same as aevyra-reflex): `anthropic/...`, `openrouter/...`, `openai/...`,
 `ollama/...`. Default output is `result.render()` to stdout; `--output`
 additionally dumps `Attribution.to_json(indent=2)` to a file.
+
+Run history is always on — every `diagnose` invocation writes to
+`<repo-root>/.origin/diagnoses/` (walks up from cwd to find `.git`;
+falls back to `cwd/.origin/` outside a git repo). Each run gets a
+timestamped directory with `config.json`, `checkpoint.json` (written
+atomically after each method), and `result.json` (written on completion).
+
+```bash
+# Resume the latest interrupted run
+aevyra-origin diagnose trace.json --score 0.4 --rubric rubric.txt --resume
+
+# Resume a specific run by ID
+aevyra-origin diagnose trace.json --score 0.4 --rubric rubric.txt --resume-from 002
+
+# List all past runs
+aevyra-origin runs
+```
+
+`DiagnoseStore` / `DiagnoseRun` / `CheckpointState` are importable from
+`aevyra_origin` for programmatic access to run history.
 
 ## What's next
 
@@ -393,12 +428,16 @@ ruff check src/ tests/
 Install modes:
 
 ```bash
-pip install -e .              # library only (no LLM backend, no CLI)
-pip install -e ".[anthropic]" # + Anthropic backend
-pip install -e ".[openai]"    # + OpenAI-compat backend
-pip install -e ".[all]"       # both backends
+pip install -e .              # library + Anthropic (included by default)
+pip install -e ".[openai]"    # + OpenAI-compat backend (OpenRouter, Together,
+                              #   Groq, Ollama, vLLM, any OpenAI-compat endpoint)
+pip install -e ".[all]"       # same as [openai] for now
 pip install -e ".[dev]"       # everything above + typer for the CLI + pytest + ruff
 ```
+
+`anthropic` is a base dependency — it ships out of the box. `openai` is the
+only optional extra and covers every OpenAI-compatible provider via `base_url`
+override (no per-provider package needed).
 
 The `aevyra-origin` CLI script is always registered (via `[project.scripts]`)
 but requires `typer` at runtime; `cli.py` emits a friendly error if it's
@@ -431,7 +470,7 @@ Keep it this way. The core library must remain dependency-light — Origin
 should be usable with any LLM backend the user wires up, and should never
 force a specific SDK on them.
 
-## Out of scope for v0
+## Deliberately deferred
 
 - **Counterfactual replay** (compare against known-good reference outputs).
   Ablation is Origin's causal method for v0; full counterfactual replay
