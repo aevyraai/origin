@@ -228,6 +228,10 @@ if __name__ == "__main__":
     print()
     print(f"optimize_prompt_ids = {at.optimize_prompt_ids}")
 
-    # Uncomment to persist the trace for diagnose.py:
-    # import pathlib, json as _json
-    # pathlib.Path("trace.json").write_text(_json.dumps(at.to_dict(), indent=2, default=str))
+    # Persist the trace so the CLI can diagnose it:
+    #   aevyra-origin diagnose trace.json --score 0.2 --rubric rubric.txt ...
+    import json as _json
+    import pathlib as _pathlib
+
+    _pathlib.Path("trace.json").write_text(_json.dumps(at.to_dict(), indent=2, default=str))
+    print("trace saved → trace.json")

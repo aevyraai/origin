@@ -16,15 +16,86 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 try:
     import typer
 except ImportError:
     print("typer is required for the CLI. Install it with: pip install typer")
     sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Provider resolution — same convention as aevyra-reflex:
+#   provider/model   e.g.  anthropic/claude-sonnet-4-5
+#                          openrouter/qwen/qwen3-8b
+#                          openai/gpt-4o
+#                          ollama/qwen3:8b
+# ---------------------------------------------------------------------------
+
+_PROVIDER_MAP: dict[str, dict[str, Any]] = {
+    "anthropic": {},
+    "openai": {},
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "env_key": "OPENROUTER_API_KEY",
+    },
+    "ollama": {
+        "base_url": "http://localhost:11434/v1",
+        "api_key": "ollama",
+    },
+}
+
+
+def _resolve_llm(model_str: str) -> tuple[Any, str]:
+    """Parse a provider/model string and return (llm_callable, label).
+
+    Supported formats:
+        anthropic/claude-sonnet-4-5
+        openai/gpt-4o
+        openrouter/qwen/qwen3-8b     (model part may itself contain a slash)
+        ollama/qwen3:8b
+        claude-sonnet-4-5            (bare name — infer anthropic)
+        gpt-4o                       (bare name — infer openai)
+    """
+    from aevyra_origin.llm import anthropic_llm, openai_llm
+
+    # Split on the first slash to get the provider prefix.
+    parts = model_str.split("/", 1)
+    if len(parts) == 2 and parts[0] in _PROVIDER_MAP:
+        provider, model = parts[0], parts[1]
+    else:
+        # Bare model name — infer from prefix.
+        model = model_str
+        if model.startswith("claude"):
+            provider = "anthropic"
+        else:
+            provider = "openai"
+
+    cfg = _PROVIDER_MAP.get(provider)
+    if cfg is None:
+        raise typer.BadParameter(
+            f"Unknown provider {provider!r}. "
+            f"Supported: {', '.join(_PROVIDER_MAP)}. "
+            f"Use 'provider/model' format, e.g. 'openrouter/qwen/qwen3-8b'."
+        )
+
+    label = f"{provider}/{model}"
+
+    if provider == "anthropic":
+        return anthropic_llm(model=model), label
+
+    # All others are OpenAI-compatible.
+    base_url = cfg.get("base_url")
+    api_key = cfg.get("api_key")
+    if "env_key" in cfg:
+        api_key = os.environ.get(cfg["env_key"])
+        if not api_key:
+            raise typer.BadParameter(f"Provider {provider!r} requires {cfg['env_key']} to be set.")
+    return openai_llm(model=model, base_url=base_url, api_key=api_key), label
 
 
 def _version_callback(value: bool) -> None:
@@ -74,24 +145,19 @@ def diagnose(
             help="Path to a text file containing the evaluation rubric. Use '-' to read from stdin.",
         ),
     ] = None,
-    llm_model: Annotated[
-        str,
-        typer.Option("--llm-model", help="LLM model ID (e.g. 'claude-sonnet-4-5', 'gpt-4o')."),
-    ] = "claude-sonnet-4-5",
-    llm_provider: Annotated[
+    model: Annotated[
         str,
         typer.Option(
-            "--llm-provider",
-            help="LLM provider: 'anthropic' or 'openai'. For OpenAI-compatible endpoints, use 'openai'.",
+            "--model",
+            "-m",
+            help=(
+                "Model to use for attribution, in 'provider/model' format. "
+                "Examples: 'anthropic/claude-sonnet-4-5', 'openrouter/qwen/qwen3-8b', "
+                "'openai/gpt-4o', 'ollama/qwen3:8b'. "
+                "Bare model names are also accepted: 'claude-sonnet-4-5' infers anthropic."
+            ),
         ),
-    ] = "anthropic",
-    base_url: Annotated[
-        Optional[str],
-        typer.Option(
-            "--base-url",
-            help="Custom base URL for openai-compatible endpoints (e.g. OpenRouter, Ollama).",
-        ),
-    ] = None,
+    ] = "anthropic/claude-sonnet-4-5",
     method: Annotated[
         str,
         typer.Option(
@@ -136,8 +202,7 @@ def diagnose(
 
         aevyra-origin diagnose trace.json \\
           --score 0.4 --rubric rubric.txt \\
-          --llm-model claude-sonnet-4-5 \\
-          --llm-provider anthropic \\
+          --model openrouter/qwen/qwen3-8b \\
           --method all \\
           --run-dir .origin \\
           --output result.json
@@ -149,7 +214,6 @@ def diagnose(
         aevyra-origin diagnose trace.json --score 0.4 --rubric rubric.txt --resume-from 002
     """
     from aevyra_origin import Origin, VALID_METHODS
-    from aevyra_origin.llm import anthropic_llm, openai_llm
     from aevyra_origin.run_store import DiagnoseStore
 
     # --- Validate method -------------------------------------------------------
@@ -194,16 +258,10 @@ def diagnose(
 
     # --- Build LLM factory ---------------------------------------------------
     try:
-        if llm_provider == "anthropic":
-            llm = anthropic_llm(model=llm_model)
-        elif llm_provider == "openai":
-            llm = openai_llm(model=llm_model, base_url=base_url)
-        else:
-            typer.echo(
-                f"Error: --llm-provider must be 'anthropic' or 'openai', got {llm_provider!r}.",
-                err=True,
-            )
-            raise typer.Exit(code=1)
+        llm, model_label = _resolve_llm(model)
+    except typer.BadParameter as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
     except ImportError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -236,6 +294,24 @@ def diagnose(
             run = store.new_run()
 
     # --- Run attribution ------------------------------------------------------
+    typer.echo(f"Analyzing with: {model_label}", err=True)
+
+    _METHOD_LABELS = {
+        "critic": "finding the culprit span",
+        "decomposition": "scoring each step against the rubric",
+        "ablation": "testing which spans caused the failure",
+    }
+
+    def _progress(msg: str) -> None:
+        method_key, _, rest = msg.partition(": ")
+        if rest == "starting":
+            label = _METHOD_LABELS.get(method_key, method_key)
+            typer.echo(f"  {label} ...", err=True)
+        elif rest.startswith("done"):
+            typer.echo("  done", err=True)
+        elif msg == "merging results ...":
+            typer.echo("  combining results ...", err=True)
+
     try:
         origin = Origin(llm=llm)
         result = origin.diagnose(
@@ -244,6 +320,7 @@ def diagnose(
             rubric=rubric_text,
             method=method,  # type: ignore[arg-type]
             run=run,
+            progress=_progress,
         )
     except Exception as exc:
         typer.echo(f"Error during attribution: {exc}", err=True)

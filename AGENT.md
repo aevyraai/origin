@@ -352,15 +352,15 @@ The `[project.scripts]` entry in `pyproject.toml` is enabled.
 aevyra-origin diagnose TRACE_FILE \
   --score 0.4 \
   --rubric RUBRIC_FILE \
-  --llm-model claude-sonnet-4-5 \
-  --llm-provider anthropic \
+  --model anthropic/claude-sonnet-4-5 \
   --method all \
   --output result.json
 ```
 
-`--rubric -` reads from stdin. `--base-url` is available for non-OpenAI
-providers. Default output is `result.render()` to stdout; `--output` additionally
-dumps `Attribution.to_json(indent=2)` to a file.
+`--rubric -` reads from stdin. `--model` uses `provider/model` format
+(same as aevyra-reflex): `anthropic/...`, `openrouter/...`, `openai/...`,
+`ollama/...`. Default output is `result.render()` to stdout; `--output`
+additionally dumps `Attribution.to_json(indent=2)` to a file.
 
 ## What's next
 

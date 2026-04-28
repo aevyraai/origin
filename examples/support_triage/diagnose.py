@@ -51,12 +51,17 @@ deterministic without needing a cache.
 
 from __future__ import annotations
 
+import itertools
 import os
+import sys
+import threading
+import time
 from typing import Any
 
 from aevyra_witness import AgentTrace, TraceNode
+from aevyra_witness.runtime import trace as witness_trace
 
-from aevyra_origin import diagnose_pipeline
+from aevyra_origin import Origin
 from aevyra_origin.llm import anthropic_llm, openai_llm
 
 from pipeline import triage_agent  # type: ignore[import-not-found]
@@ -139,21 +144,74 @@ def runner(original: AgentTrace, overrides: dict[str, Any]) -> AgentTrace:
 
 
 def _pick_llm():
-    """Pick whichever LLM backend has credentials set."""
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return anthropic_llm(model="claude-sonnet-4-5")
-    if os.environ.get("OPENAI_API_KEY"):
-        return openai_llm(model="gpt-4o")
+    """Pick whichever LLM backend has credentials set.
+
+    Override the model by setting ORIGIN_LLM_MODEL:
+
+        # Use a cheap/fast model via OpenRouter
+        OPENROUTER_API_KEY=sk-or-... ORIGIN_LLM_MODEL=qwen/qwen3-8b python diagnose.py
+
+        # Use a local Ollama model (no key needed)
+        ORIGIN_LLM_MODEL=ollama/qwen3:8b python diagnose.py
+    """
+    model_override = os.environ.get("ORIGIN_LLM_MODEL")
+
     if os.environ.get("OPENROUTER_API_KEY"):
         return openai_llm(
-            model="anthropic/claude-sonnet-4-5",
+            model=model_override or "qwen/qwen3-8b",
             base_url="https://openrouter.ai/api/v1",
             api_key=os.environ["OPENROUTER_API_KEY"],
         )
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return anthropic_llm(model=model_override or "claude-sonnet-4-5")
+    if os.environ.get("OPENAI_API_KEY"):
+        return openai_llm(model=model_override or "gpt-4o")
+    if model_override and model_override.startswith("ollama/"):
+        # Local Ollama — no key needed.
+        return openai_llm(
+            model=model_override.removeprefix("ollama/"),
+            base_url="http://localhost:11434/v1",
+            api_key="ollama",
+        )
     raise SystemExit(
-        "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY "
-        "before running the diagnose script."
+        "Set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY "
+        "before running the diagnose script.\n"
+        "For local Ollama: set ORIGIN_LLM_MODEL=ollama/qwen3:8b (no key needed)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Progress spinner
+# ---------------------------------------------------------------------------
+
+
+class _Spinner:
+    """Print a spinning cursor + message to stderr while work runs in the background."""
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+
+    def _spin(self) -> None:
+        for ch in itertools.cycle("|/-\\"):
+            if self._stop.is_set():
+                break
+            sys.stderr.write(f"\r{ch}  {self._message} ")
+            sys.stderr.flush()
+            time.sleep(0.1)
+        sys.stderr.write("\r")
+        sys.stderr.flush()
+
+    def __enter__(self) -> "_Spinner":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._stop.set()
+        self._thread.join()
+        sys.stderr.write("\r" + " " * (len(self._message) + 10) + "\r")
+        sys.stderr.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -172,22 +230,83 @@ if __name__ == "__main__":
         "and confirm the refund is being issued."
     )
 
-    result = diagnose_pipeline(
-        triage_agent,
-        question,
-        judge=judge,
-        rubric=RUBRIC,
-        llm=_pick_llm(),
-        ideal=ideal,
-        runner=runner,  # enables ablation under method="all"
-        method="all",
-        trace_metadata={"scenario": "duplicate_charge"},
+    llm = _pick_llm()
+    llm_label = getattr(llm, "_model", "unknown model")
+    sys.stderr.write(f"Analyzing with : {llm_label}\n")
+    sys.stderr.write("Method         : all  (critic + decomposition + ablation)\n\n")
+
+    # ------------------------------------------------------------------
+    # Step 1 — run the pipeline and capture the trace
+    # ------------------------------------------------------------------
+    # The pipeline stubs are deterministic (no LLM calls), so this is
+    # instant. In a real pipeline this would be your actual agent call.
+    sys.stderr.write("Step 1/4  Running pipeline ...\n")
+    with witness_trace(ideal=ideal, metadata={"scenario": "duplicate_charge"}) as tracer:
+        pipeline_output = triage_agent(question)
+    captured_trace = tracer.finish()
+
+    import json as _json
+    import pathlib as _pathlib
+
+    _trace_path = _pathlib.Path("trace.json")
+    _trace_path.write_text(_json.dumps(captured_trace.to_dict(), indent=2, default=str))
+
+    sys.stderr.write(
+        f"          captured {len(captured_trace.nodes)} spans — "
+        f"reply: {pipeline_output[:60]!r}\n"
+        f"          trace saved → {_trace_path}\n\n"
     )
+
+    # ------------------------------------------------------------------
+    # Step 2 — score the trace
+    # ------------------------------------------------------------------
+    sys.stderr.write("Step 2/4  Scoring trace ...\n")
+    score = judge(captured_trace)
+    sys.stderr.write(f"          score={score:.3f}\n\n")
+
+    # ------------------------------------------------------------------
+    # Step 3 — run attribution (critic + decomposition + ablation)
+    # ------------------------------------------------------------------
+    # Each method runs exactly once. Origin merges the results internally.
+    # Critic and decomposition are one LLM call each.
+    # Ablation re-runs the pipeline per candidate span (no LLM needed).
+    origin = Origin(llm=llm, runner=runner, judge=judge)
+
+    _current_spinner: list[_Spinner] = []
+
+    _STEP_LABELS = {
+        "critic": "Step 3/4  Finding the culprit span",
+        "decomposition": "Step 3/4  Scoring each step against the rubric",
+        "ablation": "Step 3/4  Testing which spans caused the failure",
+    }
+
+    def _on_progress(msg: str) -> None:
+        method, _, rest = msg.partition(": ")
+        if rest == "starting":
+            label = _STEP_LABELS.get(method, f"Step 3/4  {method}")
+            sp = _Spinner(f"{label} ...")
+            _current_spinner.append(sp)
+            sp.__enter__()
+        elif rest.startswith("done") and _current_spinner:
+            sp = _current_spinner.pop()
+            sp.__exit__(None, None, None)
+            sys.stderr.write("          done\n\n")
+        elif msg == "merging results ...":
+            sys.stderr.write("Step 4/4  Merging results ...\n")
+
+    result = origin.diagnose(
+        trace=captured_trace,
+        score=score,
+        rubric=RUBRIC,
+        method="all",
+        progress=_on_progress,
+    )
+    sys.stderr.write(f"          {len(result.culprits)} culprit(s)\n\n")
 
     print(result.render())
     print()
     print(f"Score: {result.score:.3f}")
-    print(f"Pipeline reply: {result.raw['pipeline_output']!r}")
+    print(f"Pipeline reply: {pipeline_output!r}")
 
     # -----------------------------------------------------------------------
     # Fix-type summary

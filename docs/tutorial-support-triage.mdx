@@ -1,185 +1,241 @@
 ---
 title: "Tutorial: Support triage agent"
-description: Diagnose a plan-act-respond pipeline that gives the wrong refund decision — and learn which span to fix and why.
+description: A customer-support agent denies a valid refund. Origin finds the culprit span, classifies the fix type, and tells you exactly what to change.
 ---
 
-This tutorial walks through diagnosing a real failure in a customer-support
-triage agent. The agent is given a duplicate-charge complaint and incorrectly
-denies the refund. You'll see:
+This tutorial diagnoses a real failure in a customer-support triage agent. The
+agent is given a duplicate-charge complaint and refuses to issue a refund —
+despite having the correct policy document and clear evidence in front of it.
 
-- how Origin identifies the culprit span
-- how `fix_type` tells you the failure is in the **prompt** (not the retriever)
-- how the prompt-level rollup feeds directly into Reflex
+You'll follow Origin through the full diagnosis step by step: running the
+pipeline, reading the trace, scoring the output, and interpreting the
+attribution. By the end you'll see not just *which span* caused the failure,
+but *what kind of fix* it needs.
 
 The full code is in
-[`examples/support_triage/`](https://github.com/aevyraai/origin/tree/main/examples/support_triage)
-in the origin repo.
+[`examples/support_triage/`](https://github.com/aevyraai/origin/tree/main/examples/support_triage).
+
+---
+
+## Setup
+
+```bash
+pip install aevyra-origin[openai]
+
+export OPENROUTER_API_KEY=sk-or-...
+
+cd examples/support_triage
+```
+
+---
 
 ## The pipeline
 
-The triage agent is a plan-act-respond loop:
+The triage agent is a plan-act-respond loop built on three MCP tool stubs:
 
 ```
-plan (round 1)   → planner decides which tools to call
-  ├── stripe_lookup   → pull the user's recent charges
-  ├── kb_search       → fetch the refund policy
-  └── thread_search   → prior support threads
-plan (round 2)   → planner reads tool results and decides eligibility
-respond          → responder drafts the user-facing reply
+plan (round 1)
+  ├── stripe_lookup   — pull the user's recent charges
+  ├── kb_search       — fetch the refund policy doc
+  └── thread_search   — prior support threads
+plan (round 2)        — decide eligibility from tool results
+respond               — draft the user-facing reply
 ```
 
-Both `plan` spans share `prompt_id="planner"` — they represent two firings
-of the same planner prompt. The `respond` span has its own
-`prompt_id="responder"`.
+Run it:
 
-```python
-from aevyra_witness.runtime import span, trace
-from aevyra_witness import KIND_REASON, KIND_TOOL
-
-@span("stripe_lookup", kind=KIND_TOOL)
-def stripe_lookup(customer_id): ...   # returns two identical charges
-
-@span("kb_search", kind=KIND_TOOL)
-def kb_search(query): ...             # returns the refund policy doc
-
-@span("thread_search", kind=KIND_TOOL)
-def thread_search(customer_id): ...   # returns no prior complaints
-
-def triage_agent(user_message):
-    with span("plan", kind=KIND_REASON, prompt_id="planner", optimize=True) as p1:
-        ...  # round 1: dispatch tools
-
-    with span("plan", kind=KIND_REASON, prompt_id="planner", optimize=True) as p2:
-        ...  # round 2: decide eligibility  ← THIS IS WHERE THE BUG IS
-
-    with span("respond", kind=KIND_REASON, prompt_id="responder") as r:
-        ...  # draft the reply
+```bash
+python pipeline.py
 ```
 
-## The bug
+```
+Node 1 — plan (reason)
+  Prompt: planner
+  Input:  Hey, I was just charged $29 twice on the same day...
+  Output: calls stripe_lookup, kb_search, thread_search
 
-The `kb_search` tool returns the correct refund policy:
+  Node 1.1 — stripe_lookup (tool)
+    Input:  {"customer_id": "cus_42"}
+    Output: [{"id":"ch_001","amount":29.0,"description":"Pro subscription","date":"2026-04-15"},
+              {"id":"ch_002","amount":29.0,"description":"Pro subscription","date":"2026-04-15"}]
 
-> *"Duplicate charges posted within 24 hours of one another are automatically
-> eligible for a refund."*
+  Node 1.2 — kb_search (tool)
+    Input:  {"query": "duplicate charge refund"}
+    Output: {"title": "Refund policy: duplicate charges",
+             "body": "Duplicate charges posted within 24 hours are automatically eligible
+                      for a refund. Support staff may issue the refund without further approval."}
 
-The `stripe_lookup` tool returns two identical `$29.00` charges on the same
-day. The evidence is unambiguous.
+  Node 1.3 — thread_search (tool)
+    Input:  {"customer_id": "cus_42"}
+    Output: []
 
-Despite this, the planner (round 2) confabulates an explanation:
+Node 2 — plan (reason)
+  Prompt: planner
+  Input:  user message + all tool results above
+  Output: {"diagnosis": "One charge is the monthly Pro subscription renewal; the other
+            is a prorated upgrade charge posted on the same day.",
+           "eligible_for_refund": false,
+           "rationale": "Two distinct line items, not a duplicate."}
 
-> *"One charge is the monthly Pro subscription renewal; the other is a
-> prorated upgrade charge posted on the same day."*
+Node 3 — respond (reason)
+  Prompt: responder
+  Input:  user message + planner decision above
+  Output: "Thanks for reaching out! I took a look at your account and the two charges
+           you're seeing are actually separate line items: your monthly Pro subscription,
+           plus a prorated upgrade charge. Both are valid, so no refund is needed on our end."
 
-It decides `eligible_for_refund: False`. The responder dutifully tells the
-user no refund is needed. The answer is wrong.
-
-## Running the diagnosis
-
-```python
-from aevyra_origin import diagnose_pipeline
-from aevyra_origin.llm import anthropic_llm
-
-result = diagnose_pipeline(
-    triage_agent,
-    "I was charged $29 twice on the same day — can you issue a refund?",
-    judge=judge,
-    rubric=(
-        "Acknowledge the duplicate charge, cite the refund policy, and "
-        "confirm the refund is being issued. Refusing or reframing the "
-        "charges must score low."
-    ),
-    llm=anthropic_llm(),
-    runner=runner,    # enables causal ablation
-    method="all",
-)
-
-print(result.render())
+trace saved → trace.json
 ```
 
-The judge scores the trace at **0.2** — the agent refused a clearly valid
-refund.
+The answer is wrong. `stripe_lookup` returned two identical `$29` charges on
+the same date. `kb_search` returned the policy that explicitly makes them
+refund-eligible. The round-2 planner had both in front of it — and ignored
+them, inventing an "upgrade charge" that appears nowhere in the data.
+
+---
+
+## Run the diagnosis
+
+With `trace.json` saved, diagnose it with a single CLI command:
+
+```bash
+aevyra-origin diagnose trace.json \
+  --score 0.2 \
+  --rubric rubric.txt \
+  --model openrouter/qwen/qwen3-8b \
+  --method all \
+  --output result.json
+```
+
+- `--score 0.2` — the judge score for this trace (the agent refused a valid refund)
+- `--rubric rubric.txt` — the evaluation criteria the judge used
+- `--model openrouter/qwen/qwen3-8b` — the model doing the attribution reasoning, in `provider/model` format
+- `--method all` — run critic + decomposition and merge results
+- `--output result.json` — also write the full structured result as JSON
+
+Or with Anthropic:
+
+```bash
+aevyra-origin diagnose trace.json \
+  --score 0.2 \
+  --rubric rubric.txt \
+  --model anthropic/claude-sonnet-4-5 \
+  --method all
+```
+
+---
+
+## How Origin finds the issue
+
+When you run the command above, Origin runs two analyses on your trace and
+combines them. It runs two because neither is reliable on its own.
+
+**Analysis 1 — read the whole trace and ask "what went wrong?"**
+An LLM reads every span's input and output alongside your rubric and score,
+and returns a ranked list of suspicious spans. This is fast but can be fooled
+— if the trace contains plausible-sounding reasoning, the LLM might miss the
+real failure or blame the wrong span.
+
+**Analysis 2 — break the rubric into criteria and check each step**
+Your rubric says the agent should acknowledge the duplicate charge, cite the
+refund policy, and confirm the refund. Origin checks each span against each
+criterion individually. This is more systematic but can be noisy — a span
+might fail a criterion as a side-effect of an earlier mistake, not because it
+is itself the root cause.
+
+**Why both together**
+Running both and combining them is the reliability mechanism. If only one
+analysis flags a span, confidence stays low. If both independently point at
+the same span, confidence goes up — because you'd need both analyses to be
+wrong in the same direction for it to be a false positive. In this trace both
+flag `plan` (round 2) with high agreement, giving confidence=0.86.
+
+---
 
 ## What Origin finds
 
 ```
-Origin attribution  (method=all, score=0.200)
-  Summary: The planner (round 2) misread the tool evidence and incorrectly
-  concluded the charges were distinct line items rather than a duplicate.
-  The refund policy was retrieved correctly; the failure is in how the
-  planner interpreted the data.
+Origin attribution  (method=all, score=0.200  tokens=llm=7.6K)
+  Summary: The agent failed to correctly apply the refund policy from the
+  knowledge base, incorrectly diagnosing the duplicate charges as separate
+  line items rather than eligible for refund. This led to a response that
+  denied the refund despite the policy explicitly stating duplicate charges
+  within 24 hours are eligible.
 
-  1. plan (id=p2)  [primary, confidence=0.91, fix=prompt]
-     Round-2 planner confabulated an upgrade charge that does not appear
-     in the stripe_lookup results, overriding clear evidence of a
-     duplicate and reaching an incorrect eligibility decision.
+  1. plan  [primary, confidence=0.86, fix=prompt]
+     The planner incorrectly concluded the charges were 'two distinct line
+     items' despite the kb_search result explicitly stating 'duplicate charges
+     posted within 24 hours... eligible for refund.' The charges share
+     identical amount, description, and date, meeting the policy criteria. The
+     reasoning span failed to recognize this as a duplicate case, instead
+     creating a false distinction between 'monthly renewal' and 'prorated
+     upgrade' charges.
 
-  2. respond (id=r1)  [minor, confidence=0.21, fix=prompt]
-     The responder faithfully executed the planner's wrong decision.
-     Fixing the planner will fix this span as a side effect.
+  2. respond  [contributing, confidence=0.74, fix=prompt]
+     The responder directly produced the low-scoring output by repeating the
+     flawed diagnosis from the planner. Fixing the planner prompt will fix
+     this span as a side effect.
 
-  --- Prompt-level rollup (for Reflex) ---
-  prompt=planner    [primary, confidence=0.91, spans=2]
-  prompt=responder  [minor, confidence=0.21, spans=1]
+  --- What to do ---
+  plan  (prompt: planner)  →  fix=prompt
+    Rewrite the prompt for this span so the model stays grounded in its tool
+    results and doesn't invent information. One rewrite fixes every call site
+    that shares the same prompt.
+
+  --- Prompts to fix ---
+  planner    [primary, 1 span affected]
+  responder  [contributing, 1 span affected]
 ```
 
-Both culprits have `fix_type="prompt"`. The retrieval worked — `kb_search`
-returned exactly the right policy. The problem is that the planner prompt
-doesn't anchor the LLM firmly enough to the tool results it receives: the
-model ignored the evidence and invented a narrative instead.
+---
 
-This is something Reflex can fix.
+## Reading the result
 
-## What it means for each fix_type
+**`plan` is the primary culprit, not the tools.** Round 1 dispatched the tools
+correctly and they returned the right data. The failure happened when the
+round-2 planner read that data and invented a narrative instead of following
+the evidence.
 
-This scenario landed entirely on `fix=prompt`. But the same pipeline could
-surface different failure types depending on what went wrong:
+**`fix=prompt` tells you where to look.** The retrieval worked — `kb_search`
+returned exactly the right policy. The problem is the planner prompt doesn't
+anchor the model firmly enough to its tool results. The "What to do" section
+spells this out directly, and the "Prompts to fix" section tells you which
+prompt to edit — `planner` — and that one rewrite covers every call site that
+uses it.
 
-| Scenario | Culprit | fix_type |
+**`fix` tells you what *not* to do.** If Origin had returned `fix=retrieval`,
+you'd update the index and leave the prompt alone. Here's how the same
+pipeline maps to different fix types depending on what goes wrong:
+
+| Scenario | Culprit | `fix` |
 |---|---|---|
-| kb_search returns the wrong doc | `kb_search` | `retrieval` |
-| stripe_lookup sent wrong customer_id | `stripe_lookup` | `tool_schema` |
-| Planner ignores evidence | `plan` | `prompt` |
-| stripe_lookup timed out | `stripe_lookup` | `infrastructure` |
-| Pipeline called wrong tool entirely | routing logic | `routing` |
+| Planner ignores tool evidence | `plan` | `prompt` |
+| `kb_search` returns the wrong doc | `kb_search` | `retrieval` |
+| `stripe_lookup` called with wrong args | `stripe_lookup` | `tool_schema` |
+| `stripe_lookup` timed out | `stripe_lookup` | `infrastructure` |
+| Pipeline calls wrong tool entirely | routing logic | `routing` |
 
-When Origin returns `fix=retrieval`, you fix the index. When it returns
-`fix=prompt`, you hand the result to Reflex. Origin tells you which is which
-so you don't spend time on the wrong lever.
+---
 
-## The prompt-level rollup for Reflex
+## Confirming the culprit causally
 
-`result.by_prompt()` aggregates span-level blame up to the prompt level —
-useful when the same prompt fires at multiple steps:
+The LLM analysis above tells you *which span looks suspicious*. But "looks
+suspicious" is not the same as "definitely caused the failure." To be certain,
+Origin can run a causal test: it blanks out each suspect span's output one at a
+time and re-runs the pipeline to see if the score changes. If removing a span's
+output makes things worse (or better), that span had real causal impact — it
+wasn't just correlated with the failure.
 
-```python
-for pa in result.by_prompt():
-    print(f"prompt={pa.prompt_id}  severity={pa.severity}  confidence={pa.confidence:.2f}")
-    print(f"  spans: {[s.node_id for s in pa.spans]}")
-    print(f"  reasoning: {pa.reasoning[:120]}...")
-```
-
-```
-prompt=planner    severity=primary  confidence=0.91
-  spans: ['p1', 'p2']
-  reasoning: [p2] Round-2 planner confabulated an upgrade charge...
-prompt=responder  severity=minor    confidence=0.21
-  spans: ['r1']
-  reasoning: [r1] The responder faithfully executed the planner's wrong decision...
-```
-
-Both plan spans (`p1`, `p2`) share `prompt_id="planner"`. Reflex updates that
-prompt once and every call site benefits.
-
-## Adding causal ablation
-
-The runner replays the pipeline with one span's output replaced by a neutral
-placeholder. A large score drop confirms the span is genuinely causal:
+This is called **ablation**, and it requires Origin to be able to re-run your
+pipeline. You provide a `runner` function that replays the pipeline with a
+specific span's output overridden:
 
 ```python
+from aevyra_origin import Origin
 from aevyra_witness import AgentTrace, TraceNode
 
 def runner(original: AgentTrace, overrides: dict) -> AgentTrace:
+    """Re-run the pipeline with one span's output replaced."""
     new_nodes = [
         TraceNode(
             name=n.name, input=n.input,
@@ -191,22 +247,66 @@ def runner(original: AgentTrace, overrides: dict) -> AgentTrace:
         for n in original.nodes
     ]
     return AgentTrace(nodes=new_nodes, ideal=original.ideal, metadata=dict(original.metadata))
+
+origin = Origin(llm=llm, runner=runner, judge=judge)
+result = origin.diagnose(trace=captured_trace, score=score, rubric=RUBRIC, method="all")
 ```
 
-Pass `runner=runner` to `diagnose_pipeline` and it runs ablation alongside
-the LLM methods. Ablating `p2` (the round-2 planner) causes the score to
-drop to near 0, confirming it as the primary cause — not just a suspicion.
+With a runner wired up, Origin blanks out the `plan` span's output and
+re-scores the result. The score drops to near 0, confirming the planner is the
+root cause — not just a suspect. See `diagnose.py` in the example for the
+complete script, which runs all three methods together.
 
-## Running the example
+---
 
-```bash
-cd examples/support_triage
-export ANTHROPIC_API_KEY=sk-ant-...
-python diagnose.py
+## What the planner prompt needs
+
+Origin identified `plan` as the culprit and `fix=prompt`. Here's what that
+means concretely.
+
+**The current prompt** (what the planner is working from):
+
+```
+You are a billing support agent. You have been given a customer complaint
+and the results of several tool lookups. Based on the information available,
+decide whether the customer is eligible for a refund.
+
+Return JSON with:
+  - diagnosis: your interpretation of the situation
+  - eligible_for_refund: true or false
+  - rationale: a brief explanation
 ```
 
-The pipeline stubs are deterministic — no LLM tokens are burned by the
-pipeline itself. Only the attribution LLM call costs tokens.
+Nothing in this prompt tells the model to trust the tool data over its own
+reasoning. So when the model sees two identical charges, it fills the gap
+with a plausible-sounding explanation — "monthly renewal plus prorated
+upgrade" — rather than reading what `stripe_lookup` actually returned.
+
+**The fixed prompt** adds one grounding rule:
+
+```
+You are a billing support agent. You have been given a customer complaint
+and the results of several tool lookups. Based on the information available,
+decide whether the customer is eligible for a refund.
+
+IMPORTANT: Base your decision ONLY on what the tool results explicitly show.
+Do not infer or assume charges that do not appear in the stripe_lookup data.
+If stripe_lookup shows two charges with identical amounts and descriptions
+on the same date, treat them as duplicates and apply the refund policy.
+
+Return JSON with:
+  - diagnosis: your interpretation of the situation
+  - eligible_for_refund: true or false
+  - rationale: a brief explanation
+```
+
+With this change the planner reads the duplicate charges, matches them
+against the kb_search policy, and returns `eligible_for_refund: true`.
+The responder then issues the refund — no other changes needed.
+
+This targeted rewrite is what Reflex would generate and test automatically.
+
+---
 
 ## Next steps
 

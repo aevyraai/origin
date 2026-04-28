@@ -233,6 +233,8 @@ class TestAttribution:
         assert "no culprits identified" in rendered
 
     def test_render_with_node_id(self):
+        # node_id is stored on the object but no longer shown in render output
+        # (internal IDs are not meaningful to end users).
         attr = _make_attribution(
             culprits=[
                 NodeAttribution(
@@ -245,7 +247,8 @@ class TestAttribution:
             ]
         )
         rendered = attr.render()
-        assert "id=p1" in rendered
+        assert "plan" in rendered
+        assert "id=p1" not in rendered
 
 
 # ---------------------------------------------------------------------------
