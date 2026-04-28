@@ -9,7 +9,7 @@ of culprit spans — each with severity, confidence, grounded reasoning, and a
 `fix_type` that tells you exactly where the repair effort belongs.
 
 ```bash
-pip install aevyra-origin[anthropic]
+pip install aevyra-origin
 ```
 
 Not all agent failures are prompt failures. Origin classifies each culprit into
@@ -115,8 +115,8 @@ corroboration bonus for spans named by multiple methods.
 Claude, OpenAI, OpenRouter, Ollama, vLLM, or any OpenAI-compatible endpoint:
 
 ```bash
-pip install aevyra-origin[anthropic]   # Claude (default)
-pip install aevyra-origin[openai]      # OpenAI-compatible
+pip install aevyra-origin              # Claude included by default
+pip install aevyra-origin[openai]      # add OpenAI, OpenRouter, Together, Groq, Ollama
 ```
 
 ```python

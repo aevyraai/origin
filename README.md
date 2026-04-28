@@ -31,12 +31,21 @@ Origin   →  finds where it went wrong      (you are here)
 ## Install
 
 ```bash
-pip install aevyra-origin[anthropic]     # default: Claude
-# or
-pip install aevyra-origin[openai]        # OpenAI-compat (OpenAI, OpenRouter, Together, local)
+pip install aevyra-origin               # Claude included by default
+pip install aevyra-origin[openai]       # add OpenAI, OpenRouter, Together, Groq, Ollama
+pip install aevyra-origin[all]          # everything
 ```
 
 Python 3.10+.
+
+| Provider | Extra | Env var |
+|---|---|---|
+| **Anthropic** | _(included)_ | `ANTHROPIC_API_KEY` |
+| **OpenAI** | `[openai]` | `OPENAI_API_KEY` |
+| **OpenRouter** | `[openai]` | `OPENROUTER_API_KEY` |
+| **Together AI** | `[openai]` | `TOGETHER_API_KEY` |
+| **Groq** | `[openai]` | `GROQ_API_KEY` |
+| **Ollama** | `[openai]` | — |
 
 ## Quick start (turnkey)
 
