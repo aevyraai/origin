@@ -215,6 +215,7 @@ class Origin:
         ablation_placeholder: str = "null",
         ablation_budget: int | None = None,
         run: "Any | None" = None,  # DiagnoseRun | None — avoid circular import
+        progress: "Any | None" = None,  # Callable[[str], None] | None
     ) -> Attribution:
         """Attribute a trace's failure to specific node(s).
 
@@ -371,25 +372,33 @@ class Origin:
                 run.save_result(result.to_dict())
             return result
 
+        def _emit(msg: str) -> None:
+            if progress is not None:
+                progress(msg)
+
         # --- method == "all" ------------------------------------------------
         if "critic" not in completed:
+            _emit("critic: starting")
             tok_before = _read_tokens(self.llm)
             critic_out = run_critic(trace=trace, score=score, rubric=rubric, llm=self.llm)
             llm_tokens += _read_tokens(self.llm) - tok_before
             method_outputs["critic"] = critic_out
             completed.add("critic")
             _save_checkpoint()
+            _emit(f"critic: done ({len(critic_out['culprits'])} culprit(s))")
         else:
             critic_out = method_outputs["critic"]
             logger.info("diagnose: skipping critic (already completed in checkpoint)")
 
         if "decomposition" not in completed:
+            _emit("decomposition: starting")
             tok_before = _read_tokens(self.llm)
             decomp_out = run_decomposition(trace=trace, score=score, rubric=rubric, llm=self.llm)
             llm_tokens += _read_tokens(self.llm) - tok_before
             method_outputs["decomposition"] = decomp_out
             completed.add("decomposition")
             _save_checkpoint()
+            _emit(f"decomposition: done ({len(decomp_out['culprits'])} culprit(s))")
         else:
             decomp_out = method_outputs["decomposition"]
             logger.info("diagnose: skipping decomposition (already completed in checkpoint)")
@@ -406,6 +415,8 @@ class Origin:
         if self.ablation_available:
             assert self.runner is not None and self.judge is not None
             if "ablation" not in completed:
+                n_candidates = len([n for n in trace.nodes if n.optimize])
+                _emit(f"ablation: starting ({n_candidates} candidate span(s), no LLM)")
                 ablation_out = run_ablation(
                     trace=trace,
                     score=score,
@@ -420,6 +431,7 @@ class Origin:
                 method_outputs["ablation"] = ablation_out
                 completed.add("ablation")
                 _save_checkpoint()
+                _emit(f"ablation: done ({len(ablation_out['culprits'])} culprit(s))")
             else:
                 ablation_out = method_outputs["ablation"]
                 logger.info("diagnose: skipping ablation (already completed in checkpoint)")
@@ -428,6 +440,7 @@ class Origin:
         else:
             logger.debug("ablation skipped in method='all' (runner/judge not configured)")
 
+        _emit("merging results ...")
         raw: dict[str, Any] = {k: method_outputs[k] for k in method_outputs}
         merged = _merge(per_method_culprits, trace)
         summary = _merge_summaries(per_method_summaries)

@@ -41,8 +41,13 @@ Conceptually::
 from __future__ import annotations
 
 import json
+import textwrap
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+
+def _wrap(text: str, width: int = 72) -> list[str]:
+    return textwrap.wrap(text, width=width)
 
 Severity = Literal["primary", "contributing", "minor"]
 FixType = Literal["prompt", "tool_schema", "retrieval", "routing", "infrastructure", "unknown"]
@@ -264,6 +269,13 @@ class Attribution:
 
     def to_json(self, **kwargs: Any) -> str:
         kwargs.setdefault("ensure_ascii", False)
+
+        def _default(obj: Any) -> Any:
+            if hasattr(obj, "to_dict"):
+                return obj.to_dict()
+            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+        kwargs.setdefault("default", _default)
         return json.dumps(self.to_dict(), **kwargs)
 
     @classmethod
@@ -295,22 +307,65 @@ class Attribution:
             lines.append("  (no culprits identified)")
             return "\n".join(lines)
         for i, c in enumerate(self.culprits, 1):
-            label = c.node_name
-            if c.node_id:
-                label = f"{c.node_name} (id={c.node_id})"
             lines.append(
-                f"  {i}. {label}  [{c.severity}, confidence={c.confidence:.2f}, fix={c.fix_type}]"
+                f"  {i}. {c.node_name}  [{c.severity}, confidence={c.confidence:.2f}, fix={c.fix_type}]"
             )
             lines.append(f"     {c.reasoning}")
+
+        # What to do — plain-English action per culprit, grouped by fix_type.
+        _FIX_ADVICE: dict[str, str] = {
+            "prompt": (
+                "Rewrite the prompt for this span so the model stays grounded in its tool "
+                "results and doesn't invent information. If a prompt_id is shown below, one "
+                "rewrite fixes every call site that shares it."
+            ),
+            "retrieval": (
+                "The retrieval step returned wrong or missing documents — the prompt isn't "
+                "the problem. Fix the index, chunking strategy, or query instead."
+            ),
+            "tool_schema": (
+                "The tool's input schema caused the model to call it incorrectly. Update "
+                "the schema or the tool's description so the model invokes it with the "
+                "right arguments."
+            ),
+            "routing": (
+                "The pipeline sent the request to the wrong branch or tool. Fix the routing "
+                "logic, not the span prompts."
+            ),
+            "infrastructure": (
+                "This span hit an infrastructure issue (timeout, rate limit, auth error, "
+                "quota). Check your infra — prompt changes won't help here."
+            ),
+            "unknown": (
+                "Origin couldn't determine the fix type from the trace. Read the reasoning "
+                "above and inspect the span manually."
+            ),
+        }
+
+        lines.append("")
+        lines.append("  --- What to do ---")
+        seen_fix_types: set[str] = set()
+        for c in self.culprits:
+            if c.severity == "minor":
+                continue  # minor culprits are usually side-effects; skip noise
+            prompt_hint = f"  (prompt: {c.prompt_id})" if c.prompt_id else ""
+            lines.append(f"  {c.node_name}{prompt_hint}  →  fix={c.fix_type}")
+            if c.fix_type not in seen_fix_types:
+                advice = _FIX_ADVICE.get(c.fix_type, "")
+                if advice:
+                    for part in _wrap(advice, width=72):
+                        lines.append(f"    {part}")
+                seen_fix_types.add(c.fix_type)
 
         # If there's a prompt-level rollup worth showing, append it.
         prompts = self.by_prompt()
         if prompts:
             lines.append("")
-            lines.append("  --- Prompt-level rollup (for Reflex) ---")
+            lines.append("  --- Prompts to fix ---")
             for p in prompts:
+                span_word = "span" if len(p.spans) == 1 else "spans"
                 lines.append(
-                    f"  prompt={p.prompt_id}  [{p.severity}, confidence={p.confidence:.2f}, spans={len(p.spans)}]"
+                    f"  {p.prompt_id}  [{p.severity}, {len(p.spans)} {span_word} affected]"
                 )
         return "\n".join(lines)
 
