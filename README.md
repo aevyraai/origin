@@ -272,30 +272,15 @@ always goes to stdout.
 
 ## Methods
 
-v0 ships with three attribution methods:
+Origin ships with three attribution methods.
 
-- **LLM-as-critic** (`method="critic"`) — one LLM call. The LLM reads the
-  rubric, score, and full trace, and returns a ranked list of culprit spans
-  with severity, confidence, reasoning, and fix_type. Fast, general, works
-  for any rubric. Best for single-cause failures.
-- **Score decomposition** (`method="decomposition"`) — one LLM call. The
-  LLM enumerates the rubric's underlying criteria, attributes each criterion
-  to the span(s) responsible, and aggregates per-span blame across failed
-  criteria. Better at surfacing distributed failures. fix_type is determined
-  by majority vote across criteria.
-- **Ablation** (`method="ablation"`) — causal. For each candidate span,
-  replaces its output with a neutral placeholder, re-runs the pipeline via a
-  user-supplied `runner`, and re-scores via the `judge`. The only method
-  that makes a causal claim — a large score delta means the span is
-  genuinely responsible, independent of whether an LLM thinks it looks
-  suspicious. Requires a deterministic runner.
-- **`method="all"`** — runs all available methods and merges. The two LLM
-  methods always run (two LLM calls). Ablation participates when a `runner`
-  is supplied; otherwise it's silently skipped. Spans named by multiple
-  methods receive a corroboration bonus — merged confidence lies between
-  the arithmetic mean and the max, weighted toward the max by how many
-  methods agreed. fix_type is resolved to the most specific type across
-  methods (e.g. `"retrieval"` wins over `"unknown"`).
+**LLM-as-critic** (`method="critic"`) makes one LLM call. The LLM reads the rubric, score, and full trace, and returns a ranked list of culprit spans with severity, confidence, reasoning, and fix_type. Fast and general — works for any rubric. Best for single-cause failures.
+
+**Score decomposition** (`method="decomposition"`) also makes one LLM call, but approaches it differently. The LLM enumerates the rubric's underlying criteria, attributes each criterion to the span(s) responsible, and aggregates per-span blame across failed criteria. Better at surfacing distributed failures where multiple steps each contributed. fix_type is determined by majority vote across criteria.
+
+**Ablation** (`method="ablation"`) is the causal method. For each candidate span, it replaces the span's output with a neutral placeholder, re-runs the pipeline via a user-supplied `runner`, and re-scores via the `judge`. It's the only method that makes a causal claim — a large score delta means the span is genuinely responsible, not just suspicious-looking. Requires a deterministic runner.
+
+**`method="all"`** runs all available methods and merges the results. The two LLM methods always run (two LLM calls total). Ablation participates when a `runner` is supplied; otherwise it's silently skipped. Spans flagged by multiple methods receive a corroboration bonus — if both independently point at the same span, confidence rises. fix_type is resolved to the most specific type across methods (e.g. `"retrieval"` wins over `"unknown"`).
 
 ### Ablation quick start
 
