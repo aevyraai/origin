@@ -25,12 +25,11 @@ Covers:
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from aevyra_origin.run_store import CheckpointState, DiagnoseRun, DiagnoseStore
+from aevyra_origin.run_store import CheckpointState, DiagnoseStore
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +375,7 @@ class TestListRuns:
         assert "Be correct."[:60] in row["rubric_preview"]
 
     def test_status_reflected_correctly(self, tmp_store: DiagnoseStore) -> None:
-        r1 = tmp_store.new_run()  # running
+        tmp_store.new_run()  # running
         r2 = tmp_store.new_run()
         r2.save_checkpoint(_sample_checkpoint(r2.run_id))  # interrupted
         r3 = tmp_store.new_run()
