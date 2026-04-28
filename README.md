@@ -260,16 +260,15 @@ For pre-captured traces (the raw on-ramp):
 aevyra-origin diagnose trace.json \
   --score 0.4 \
   --rubric rubric.txt \
-  --llm-model claude-sonnet-4-5 \
-  --llm-provider anthropic \
+  --model anthropic/claude-sonnet-4-5 \
   --method all \
   --output result.json     # optional — writes full Attribution JSON
 ```
 
-`--rubric -` reads from stdin. `--llm-provider openai` works with any
-OpenAI-compatible endpoint; pair it with `--base-url` for OpenRouter,
-Ollama, or a local vLLM server. The render (including prompt-level rollup
-for Reflex) always goes to stdout.
+`--rubric -` reads from stdin. `--model` follows the same `provider/model`
+convention as aevyra-reflex — `openrouter/qwen/qwen3-8b`, `openai/gpt-4o`,
+`ollama/qwen3:8b`. The render (including prompt-level rollup for Reflex)
+always goes to stdout.
 
 ## Methods
 
