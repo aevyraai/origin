@@ -94,9 +94,7 @@ def _resolve_llm(model_str: str) -> tuple[Any, str]:
     if "env_key" in cfg:
         api_key = os.environ.get(cfg["env_key"])
         if not api_key:
-            raise typer.BadParameter(
-                f"Provider {provider!r} requires {cfg['env_key']} to be set."
-            )
+            raise typer.BadParameter(f"Provider {provider!r} requires {cfg['env_key']} to be set.")
     return openai_llm(model=model, base_url=base_url, api_key=api_key), label
 
 
@@ -310,7 +308,7 @@ def diagnose(
             label = _METHOD_LABELS.get(method_key, method_key)
             typer.echo(f"  {label} ...", err=True)
         elif rest.startswith("done"):
-            typer.echo(f"  done", err=True)
+            typer.echo("  done", err=True)
         elif msg == "merging results ...":
             typer.echo("  combining results ...", err=True)
 

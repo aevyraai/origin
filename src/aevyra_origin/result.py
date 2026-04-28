@@ -49,6 +49,7 @@ from typing import Any, Literal
 def _wrap(text: str, width: int = 72) -> list[str]:
     return textwrap.wrap(text, width=width)
 
+
 Severity = Literal["primary", "contributing", "minor"]
 FixType = Literal["prompt", "tool_schema", "retrieval", "routing", "infrastructure", "unknown"]
 
