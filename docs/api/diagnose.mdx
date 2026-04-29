@@ -1,0 +1,206 @@
+---
+title: diagnose_pipeline & Origin
+description: API reference for diagnose_pipeline(), Origin, and judge_from_verdict().
+---
+
+## `diagnose_pipeline()`
+
+The turnkey on-ramp. Runs your pipeline under a Witness tracer, scores the
+captured trace with your judge, and invokes the attribution engine — all in
+one call.
+
+```python
+from aevyra_origin import diagnose_pipeline
+```
+
+### Signature
+
+```python
+def diagnose_pipeline(
+    pipeline,
+    *args,
+    judge,
+    rubric,
+    llm,
+    ideal=None,
+    trace_metadata=None,
+    method="all",
+    runner=None,
+    score_range=(0.0, 1.0),
+    ablation_placeholder="null",
+    ablation_budget=None,
+    **kwargs,
+) -> Attribution
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `pipeline` | `Callable` | *(required)* | A callable instrumented with `@span` / `with span(...)`. Called once as `pipeline(*args, **kwargs)` |
+| `*args` | | | Positional arguments forwarded to the pipeline |
+| `judge` | `Callable[[AgentTrace], float]` | *(required)* | Returns the score for the captured trace. Typically wraps a Verdict metric via `judge_from_verdict` |
+| `rubric` | `str` | *(required)* | Evaluation rubric passed to the attribution methods |
+| `llm` | `Callable[[str], str]` | *(required)* | LLM callable for critic and decomposition methods |
+| `ideal` | `str \| None` | `None` | Optional reference output stored on the trace |
+| `trace_metadata` | `dict \| None` | `None` | Trace-level metadata (model name, run id, etc.) |
+| `method` | `str` | `"all"` | `"critic"`, `"decomposition"`, `"ablation"`, or `"all"` |
+| `runner` | `Callable \| None` | `None` | Pipeline replay callable for ablation. When omitted, `method="ablation"` raises; `method="all"` silently skips ablation |
+| `score_range` | `tuple[float, float]` | `(0.0, 1.0)` | Score range for delta normalization in ablation |
+| `ablation_placeholder` | `str` | `"null"` | Placeholder strategy for ablation: `"null"` or `"ideal"` |
+| `ablation_budget` | `int \| None` | `None` | Cap ablation runs. `None` = ablate every span |
+| `**kwargs` | | | Keyword arguments forwarded to the pipeline |
+
+### Example
+
+```python
+from aevyra_origin import diagnose_pipeline
+from aevyra_origin.llm import anthropic_llm
+from aevyra_origin.judges import judge_from_verdict
+from aevyra_verdict import LLMJudge
+from aevyra_verdict.providers import get_provider
+
+result = diagnose_pipeline(
+    my_agent,
+    "I was charged twice — how do I get a refund?",
+    judge=judge_from_verdict(LLMJudge(judge_provider=get_provider("anthropic"))),
+    rubric="Accurate, grounded in the policy docs, and addresses the user's concern.",
+    llm=anthropic_llm(),
+    method="all",
+)
+print(result.render())
+```
+
+---
+
+## `Origin`
+
+The attribution engine. Use directly when you already have a captured
+`AgentTrace` and a score.
+
+```python
+from aevyra_origin import Origin
+```
+
+### Constructor
+
+```python
+Origin(
+    llm,
+    *,
+    runner=None,
+    judge=None,
+    score_range=(0.0, 1.0),
+)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `llm` | `Callable[[str], str]` | *(required)* | LLM callable for critic and decomposition |
+| `runner` | `Callable \| None` | `None` | Pipeline replay callable for ablation |
+| `judge` | `Callable[[AgentTrace], float] \| None` | `None` | Scoring callable for ablation. Must be provided together with `runner` |
+| `score_range` | `tuple[float, float]` | `(0.0, 1.0)` | Score range for ablation delta normalization |
+
+`runner` and `judge` must be provided together — having one without the other
+raises `ValueError`.
+
+### `Origin.diagnose()`
+
+```python
+def diagnose(
+    *,
+    trace,
+    score,
+    rubric,
+    method="all",
+    ablation_placeholder="null",
+    ablation_budget=None,
+) -> Attribution
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `trace` | `AgentTrace` | *(required)* | The execution trace to diagnose |
+| `score` | `float` | *(required)* | Judge score being explained (typically 0.0–1.0) |
+| `rubric` | `str` | *(required)* | The rubric the judge used |
+| `method` | `str` | `"all"` | `"critic"`, `"decomposition"`, `"ablation"`, or `"all"` |
+| `ablation_placeholder` | `str` | `"null"` | Ablation placeholder strategy: `"null"` or `"ideal"` |
+| `ablation_budget` | `int \| None` | `None` | Cap ablation runs |
+
+### Example
+
+```python
+from aevyra_origin import Origin
+from aevyra_origin.llm import anthropic_llm
+
+origin = Origin(llm=anthropic_llm())
+result = origin.diagnose(
+    trace=my_trace,
+    score=0.31,
+    rubric="Accurate, grounded in the policy docs.",
+    method="all",
+)
+print(result.render())
+```
+
+### `Origin.ablation_available`
+
+`bool` — `True` when both `runner` and `judge` are set.
+
+---
+
+## `judge_from_verdict()`
+
+Adapts any Verdict `Metric` to Origin's `Callable[[AgentTrace], float]`
+contract. Duck-typed — no hard Verdict dependency at import time.
+
+```python
+from aevyra_origin.judges import judge_from_verdict
+```
+
+### Signature
+
+```python
+def judge_from_verdict(
+    metric,
+    *,
+    extract_response=None,
+    extract_messages=None,
+) -> Callable[[AgentTrace], float]
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `metric` | Verdict `Metric` | *(required)* | Any Verdict metric: `LLMJudge`, `ExactMatch`, `BleuScore`, `RougeScore`, or custom |
+| `extract_response` | `Callable \| None` | `None` | Extract the response string from the trace. Defaults to the last root span's output |
+| `extract_messages` | `Callable \| None` | `None` | Extract the messages list from the trace. Defaults to the first root span's input as a user message |
+
+### Example
+
+```python
+from aevyra_origin.judges import judge_from_verdict
+from aevyra_verdict import LLMJudge
+from aevyra_verdict.providers import get_provider
+
+judge = judge_from_verdict(
+    LLMJudge(judge_provider=get_provider("anthropic")),
+)
+
+# Custom extraction when the default (last root span output) isn't right
+judge = judge_from_verdict(
+    LLMJudge(judge_provider=get_provider("anthropic")),
+    extract_response=lambda trace: trace.nodes[-1].output,
+)
+```
+
+### Using any callable as a judge
+
+`judge=` accepts any `Callable[[AgentTrace], float]` — you don't need Verdict:
+
+```python
+def my_judge(trace) -> float:
+    output = trace.nodes[-1].output
+    return 1.0 if "refund" in str(output).lower() else 0.0
+
+result = diagnose_pipeline(my_agent, question, judge=my_judge, rubric=rubric, llm=llm)
+```

@@ -1,0 +1,138 @@
+---
+title: Adapters & on-ramps
+description: Three ways to get a trace into Origin — live pipeline, existing logs, or raw AgentTrace.
+---
+
+Origin works with any trace you can produce. There are three on-ramps depending
+on what you already have.
+
+## 1. Turnkey — live pipeline
+
+The recommended starting point. Give Origin your pipeline and it handles
+tracing and scoring automatically.
+
+Your pipeline only needs `@span` decorators from `aevyra_witness.runtime`:
+
+```python
+from aevyra_witness.runtime import span
+from aevyra_origin import diagnose_pipeline
+from aevyra_origin.llm import anthropic_llm
+
+@span("classify")
+def classify(text): ...
+
+@span("retrieve")
+def retrieve(topic): ...
+
+@span("answer", optimize=True, prompt_id="answer_v1")
+def answer(q, docs): ...
+
+def my_agent(q):
+    topic = classify(q)
+    return answer(q, retrieve(topic))
+
+result = diagnose_pipeline(
+    my_agent, "how do I get a refund?",
+    judge=my_judge,
+    rubric="Accurate and grounded in policy.",
+    llm=anthropic_llm(),
+)
+```
+
+See [Quick start](/origin/quickstart) for the full example with a Verdict judge.
+
+---
+
+## 2. Adapter — existing framework logs
+
+Already emitting telemetry from another framework? Parse the logs into an
+`AgentTrace` and hand it directly to Origin.
+
+### OpenClaw JSONL
+
+[OpenClaw](https://github.com/openclaw/openclaw) streams telemetry as JSONL —
+one event per line. The `from_openclaw_jsonl` adapter handles start/end
+pairing, auto-parents tool calls via `tool_call_id`, and covers all OpenClaw
+event families including Task Brain (`task.*`, `cron.*`, `acp.*`):
+
+```python
+from pathlib import Path
+from aevyra_witness.adapters import from_openclaw_jsonl
+from aevyra_origin import Origin
+from aevyra_origin.llm import anthropic_llm
+
+lines = Path("run_2026_04_21.jsonl").read_text().splitlines()
+trace = from_openclaw_jsonl(lines, ideal="expected output")
+
+origin = Origin(llm=anthropic_llm())
+result = origin.diagnose(trace=trace, score=0.4, rubric=rubric)
+```
+
+To mark prompts as Reflex optimization targets without annotating the event
+stream:
+
+```python
+trace = from_openclaw_jsonl(lines, optimize_prompt_ids=["planner", "responder"])
+```
+
+### OpenTelemetry (LangGraph, CrewAI, AutoGen, Vercel AI SDK)
+
+Any framework that emits OpenTelemetry spans with the
+[GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
+works out of the box:
+
+```python
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from aevyra_witness.adapters import from_otel_spans
+from aevyra_origin import Origin
+from aevyra_origin.llm import anthropic_llm
+
+exporter = InMemorySpanExporter()
+# ... configure your OTel TracerProvider with this exporter, run your agent ...
+spans = exporter.get_finished_spans()
+trace = from_otel_spans(spans)
+
+origin = Origin(llm=anthropic_llm())
+result = origin.diagnose(trace=trace, score=0.4, rubric=rubric)
+```
+
+Plain dicts from an OTLP JSON export are also accepted by `from_otel_spans`.
+
+### Bring your own format
+
+For structured logs from Langfuse, LangSmith, or a home-grown JSONL store,
+the [BYO trace tutorial](/origin/tutorial-bring-your-own-trace) shows a
+30-line adapter pattern that works for any source format.
+
+---
+
+## 3. Raw — AgentTrace + score
+
+Already have an `AgentTrace` and a score? Use `Origin.diagnose` directly:
+
+```python
+from aevyra_origin import Origin
+from aevyra_origin.llm import anthropic_llm
+
+origin = Origin(llm=anthropic_llm())
+result = origin.diagnose(
+    trace=my_trace,
+    score=0.4,
+    rubric="Accurate, grounded in the policy docs.",
+)
+print(result.render())
+```
+
+Or via the CLI if you have the trace as a JSON file:
+
+```bash
+aevyra-origin diagnose trace.json \
+  --score 0.4 \
+  --rubric rubric.txt \
+  --model anthropic/claude-sonnet-4-5
+```
+
+`AgentTrace.to_dict()` / `AgentTrace.to_json()` serialize the trace;
+`AgentTrace.from_dict()` / `AgentTrace.from_json()` restore it. Non-Python
+producers can emit a conforming JSON object directly — see the
+[Witness schema spec](https://github.com/aevyraai/witness/blob/main/schema/README.md).

@@ -1,0 +1,82 @@
+---
+title: Providers & Models
+description: Choose which LLM powers Origin's attribution engine.
+---
+
+Origin uses one LLM for attribution — the model that reads the trace, the score,
+and the rubric, and returns the ranked culprit list. This is different from the
+model your agent pipeline runs on, which Origin does not control.
+
+## Default: Anthropic Claude
+
+Claude is included when you `pip install aevyra-origin`. No extra flags needed.
+
+```bash
+pip install aevyra-origin
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+The default model is `claude-sonnet-4-5`. It's fast, capable, and well-suited
+to the diagnostic reasoning Origin requires.
+
+## Provider format
+
+Models are specified as `provider/model` — the same convention as aevyra-reflex:
+
+```python
+from aevyra_origin.llm import anthropic_llm, openai_llm
+
+llm = anthropic_llm(model="claude-sonnet-4-5")          # Anthropic
+llm = openai_llm(model="gpt-4o")                        # OpenAI
+llm = openai_llm(model="qwen/qwen3-8b",                 # OpenRouter
+                 base_url="https://openrouter.ai/api/v1",
+                 api_key=os.environ["OPENROUTER_API_KEY"])
+llm = openai_llm(model="qwen3:8b",                      # Ollama (local)
+                 base_url="http://localhost:11434/v1",
+                 api_key="ollama")  # pragma: allowlist secret
+```
+
+## Provider reference
+
+| Provider | Extra | Env var |
+|---|---|---|
+| **Anthropic** | _(included)_ | `ANTHROPIC_API_KEY` |
+| **OpenAI** | `[openai]` | `OPENAI_API_KEY` |
+| **OpenRouter** | `[openai]` | `OPENROUTER_API_KEY` |
+| **Together AI** | `[openai]` | `TOGETHER_API_KEY` |
+| **Groq** | `[openai]` | `GROQ_API_KEY` |
+| **Ollama** | `[openai]` | — |
+
+```bash
+pip install aevyra-origin[openai]   # adds OpenAI-compatible providers
+pip install aevyra-origin[all]      # everything
+```
+
+## CLI provider format
+
+The CLI uses `provider/model` strings via `--model`:
+
+```bash
+aevyra-origin diagnose trace.json --score 0.4 --rubric rubric.txt \
+  --model anthropic/claude-sonnet-4-5
+
+aevyra-origin diagnose trace.json --score 0.4 --rubric rubric.txt \
+  --model openrouter/qwen/qwen3-8b
+
+aevyra-origin diagnose trace.json --score 0.4 --rubric rubric.txt \
+  --model ollama/qwen3:8b
+```
+
+Bare model names are also accepted — `claude-sonnet-4-5` infers `anthropic`,
+anything else infers `openai`.
+
+## Choosing a model
+
+For most traces, a mid-tier model like `claude-sonnet-4-5` or `gpt-4o` is
+sufficient. Use a stronger model (`claude-opus-4-6`) when the trace is long
+or the rubric has many competing criteria. For quick debugging runs, a fast
+local model (Ollama `qwen3:8b`) works well.
+
+Attribution quality depends more on clear rubric writing than on model choice —
+a specific, criterion-by-criterion rubric outperforms a vague one regardless
+of model.

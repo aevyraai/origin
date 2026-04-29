@@ -1,0 +1,133 @@
+---
+title: CLI reference
+description: All commands and flags for the aevyra-origin CLI.
+---
+
+## diagnose
+
+Attribute the failure in a pre-captured trace to specific pipeline spans.
+
+```bash
+aevyra-origin diagnose <trace_file> --score <score> --rubric <rubric> [OPTIONS]
+```
+
+### Arguments
+
+| Argument | Description |
+|---|---|
+| `trace_file` | Path to a JSON file containing an `AgentTrace` (`AgentTrace.to_dict()`) |
+
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--score` | *(required)* | Judge score for this trace (typically 0.0–1.0) |
+| `--rubric` | *(required)* | Path to a text file containing the evaluation rubric. Use `-` to read from stdin |
+| `-m`, `--model` | `anthropic/claude-sonnet-4-5` | Model for attribution in `provider/model` format. Examples: `anthropic/claude-sonnet-4-5`, `openrouter/qwen/qwen3-8b`, `openai/gpt-4o`, `ollama/qwen3:8b` |
+| `--method` | `all` | Attribution method: `critic`, `decomposition`, `ablation`, or `all` |
+| `--output` | — | Write full `Attribution` JSON to this file |
+| `--runner` | — | Path to a Python file exporting `runner` and `judge` functions. Required for ablation |
+| `--run-dir` | `.origin/` at repo root | Directory for run history and checkpoints |
+| `--resume` | `false` | Resume the latest interrupted run |
+| `--resume-from` | — | Resume a specific run by ID (e.g. `001`) |
+| `--version` | — | Show version and exit |
+
+### Examples
+
+```bash
+# Basic attribution
+aevyra-origin diagnose trace.json \
+  --score 0.4 \
+  --rubric rubric.txt
+
+# Different model
+aevyra-origin diagnose trace.json \
+  --score 0.4 \
+  --rubric rubric.txt \
+  --model openrouter/qwen/qwen3-8b
+
+# Write full JSON result
+aevyra-origin diagnose trace.json \
+  --score 0.4 \
+  --rubric rubric.txt \
+  --method all \
+  --output result.json
+
+# Rubric from stdin
+cat rubric.txt | aevyra-origin diagnose trace.json --score 0.4 --rubric -
+
+# With ablation (runner.py must define runner() and judge())
+aevyra-origin diagnose trace.json \
+  --score 0.4 \
+  --rubric rubric.txt \
+  --runner runner.py
+
+# Resume latest interrupted run
+aevyra-origin diagnose trace.json --score 0.4 --rubric rubric.txt --resume
+
+# Resume specific run
+aevyra-origin diagnose trace.json --score 0.4 --rubric rubric.txt --resume-from 002
+```
+
+### Ablation runner file
+
+When using `--runner`, the file must define two functions:
+
+```python
+# runner.py
+from aevyra_witness import AgentTrace
+
+def runner(original: AgentTrace, overrides: dict) -> AgentTrace:
+    """Replay the pipeline with overrides[span_id] forced as that span's output."""
+    ...
+
+def judge(trace: AgentTrace) -> float:
+    """Score the replayed trace. Same function you use for the live run."""
+    ...
+```
+
+### Output format
+
+The render always goes to stdout:
+
+```
+Origin attribution  (method=all, score=0.31)
+  Summary: The retrieve span failed to surface the refund policy document...
+
+  1. retrieve (id=n2)  [primary, confidence=0.89, fix=retrieval]
+     Returned generic FAQ results; the refund policy doc was not in the
+     retrieved set despite being present in the index.
+
+  2. classify (id=n1)  [contributing, confidence=0.44, fix=routing]
+     Classified as "billing/general" rather than "billing/refund"...
+
+  --- Prompt-level rollup (for Reflex) ---
+  prompt=answer_v1  [minor, confidence=0.18, spans=1]
+```
+
+---
+
+## runs
+
+List all past diagnostic runs with their status and token usage.
+
+```bash
+aevyra-origin runs [OPTIONS]
+```
+
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--run-dir` | `.origin/` at repo root | Run history directory |
+
+### Output
+
+```
+ID      Status        Method          Score    LLM tokens    Abl. calls   Timestamp             Rubric
+----------------------------------------------------------------------------------------------------------
+001     completed     all             0.310    4 821         0            2026-04-21 09:14:03   Accurate, grounded...
+002     interrupted   critic          —        1 203         0            2026-04-21 11:02:44   Response must cite...
+```
+
+Status: `completed` (green) or `interrupted` (yellow, resumable with `--resume`).
