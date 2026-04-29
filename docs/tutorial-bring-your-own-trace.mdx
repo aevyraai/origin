@@ -1,0 +1,389 @@
+---
+title: "Tutorial: Bring your own trace"
+description: You already have logs from Langfuse, OpenTelemetry, or your own observability stack. Convert them once and run Origin against your existing traces — no instrumentation required.
+---
+
+This tutorial diagnoses an existing trace from a real observability stack — no
+`@span` decorators, no live agent run. The trace is a Langfuse export of a RAG
+query that returned the wrong document and gave a confidently wrong answer.
+You'll write a 30-line adapter, hand the converted trace to Origin, and read
+the attribution.
+
+By the end you'll have a working pattern for any observability source —
+Langfuse, OpenTelemetry, LangSmith, Phoenix, Braintrust, or a home-grown JSONL
+trace store. The Witness `AgentTrace` schema is the contract; everything else
+is translation.
+
+The full code is in
+[`examples/byo_trace/`](https://github.com/aevyraai/origin/tree/main/examples/byo_trace).
+
+---
+
+## Setup
+
+```bash
+pip install aevyra-origin[openai]    # needed for OpenRouter
+
+export OPENROUTER_API_KEY=sk-or-...
+# OR  export ANTHROPIC_API_KEY=sk-ant-...
+
+cd examples/byo_trace
+```
+
+There's no pipeline to run here — the trace is already on disk in
+`sample_langfuse.json`.
+
+---
+
+## The trace
+
+The captured run is a 4-span RAG query:
+
+```mermaid
+flowchart LR
+    Q["User question"] --> QR["query_rewrite\n(query_rewriter)"]
+    QR -->|"search query"| VS["vector_search"]
+    VS -->|"top-k docs"| RR["rerank\n(reranker)"]
+    RR -->|"ranked docs"| S["synthesize\n(answer_writer)"]
+    S --> OUT["Final answer"]
+
+    style Q fill:#6E3FF3,color:#fff,stroke:none
+    style OUT fill:#6E3FF3,color:#fff,stroke:none
+    style QR fill:#A78BFA,color:#fff,stroke:none
+    style RR fill:#A78BFA,color:#fff,stroke:none
+    style S fill:#A78BFA,color:#fff,stroke:none
+    style VS fill:#f0f0f0,stroke:#ccc
+```
+
+User question: *"What's our refund policy for digital subscriptions?"*
+
+Final answer: *"You can return any product within 30 days of purchase for a
+full refund, as long as it is unopened and in original packaging."*
+
+That's wrong. The user asked about *digital subscriptions*; the answer cites
+the *physical-products* return policy. The retrieval index didn't have the
+digital-subscription doc — the top-ranked result is `kb_returns_v3` (the
+physical returns policy), and the synthesizer wrote a confident answer from
+the wrong source.
+
+Origin's job is to tell us *which span* owns the failure and *what kind of
+fix* it needs: updating the retrieval index, rewriting a prompt, or something
+else entirely.
+
+---
+
+## The AgentTrace contract
+
+Origin's `diagnose` takes an `AgentTrace` — a flat list of `TraceNode`s with
+`parent_id` links, an optional `ideal`, and a `metadata` dict. To diagnose
+your own logs you write a function that produces one of these from your source
+format.
+
+The minimum you need per span:
+
+| Field | Notes |
+|---|---|
+| `name` | Human-readable label (`"plan"`, `"vector_search"`, `"synthesize"`). |
+| `id` | Unique within the trace. Required when names repeat in the DAG. |
+| `parent_id` | The id of the parent span, or `None` for a root. |
+| `kind` | One of `"reason"`, `"tool"`, `"retrieve"`, `"agent"`, `"other"`. |
+| `input` / `output` | Any JSON-serializable value. |
+| `prompt_id` | Identity of the prompt behind this span. Multiple spans sharing one `prompt_id` are rolled up together by `Attribution.by_prompt()`. |
+| `optimize` | `True` when this span's prompt is an optimization target. Reflex reads this. |
+
+---
+
+## Adapter: Langfuse → AgentTrace
+
+Langfuse stores a trace as a top-level record with nested *observations* of
+types `GENERATION`, `SPAN`, `EVENT`. The mapping to `AgentTrace` is almost
+1:1:
+
+```python title="from_langfuse.py"
+from aevyra_witness import AgentTrace, KIND_OTHER, KIND_REASON, KIND_TOOL, TraceNode
+
+
+def _kind_for(obs):
+    obs_type = (obs.get("type") or "").upper()
+    if obs_type in ("GENERATION", "AGENT", "CHAIN"):
+        return KIND_REASON
+    if obs_type in ("SPAN", "TOOL", "RETRIEVER"):
+        return KIND_TOOL
+    return KIND_OTHER
+
+
+def from_langfuse_export(payload):
+    nodes = []
+    for obs in payload.get("observations", []):
+        meta = dict(obs.get("metadata") or {})
+        prompt_id = meta.pop("prompt_id", None)
+        optimize  = bool(meta.pop("optimize", False))
+
+        nodes.append(TraceNode(
+            name=obs["name"],
+            id=obs["id"],
+            parent_id=obs.get("parentObservationId"),
+            kind=_kind_for(obs),
+            prompt_id=prompt_id,
+            optimize=optimize,
+            input=obs.get("input"),
+            output=obs.get("output"),
+            metadata=meta,
+        ))
+
+    trace_meta = dict(payload.get("metadata") or {})
+    ideal = trace_meta.pop("ideal", None)
+    return AgentTrace(nodes=nodes, ideal=ideal, metadata=trace_meta)
+```
+
+Sanity-check it:
+
+```bash
+python from_langfuse.py
+```
+
+```
+Loaded 4 spans from sample_langfuse.json
+  ideal = 'Cite the digital subscription refund policy specifically...'
+  optimize_prompt_ids = ['query_rewriter', 'reranker', 'answer_writer']
+  [reason] query_rewrite  id=obs_001  prompt=query_rewriter
+  [tool] vector_search  id=obs_002  prompt=None
+  [reason] rerank  id=obs_003  prompt=reranker
+  [reason] synthesize  id=obs_004  prompt=answer_writer
+```
+
+---
+
+## Run the diagnosis
+
+First convert the Langfuse export to an `AgentTrace` and save it as `trace.json`:
+
+```bash
+python from_langfuse.py sample_langfuse.json
+```
+
+```
+Loaded 4 spans from sample_langfuse.json
+  ideal = 'Cite the digital subscription refund policy specifically — pro-rated refund within the first 7 days, no refund after.'
+  optimize_prompt_ids = ['query_rewriter', 'reranker', 'answer_writer']
+  [reason] query_rewrite  id=obs_001  prompt=query_rewriter
+  [tool] vector_search  id=obs_002  prompt=None
+  [reason] rerank  id=obs_003  prompt=reranker
+  [reason] synthesize  id=obs_004  prompt=answer_writer
+
+trace saved → trace.json
+```
+
+Then pass it to the CLI. The score comes from your judge — here 0.1, because the
+final answer cites the wrong policy:
+
+```bash
+aevyra-origin diagnose trace.json \
+  --score 0.1 \
+  --rubric rubric.txt \
+  --model openrouter/qwen/qwen3-235b-a22b-thinking-2507 \
+  --runner runner.py
+```
+
+- `--score 0.1` — the judge score for this trace (cited wrong policy)
+- `--rubric rubric.txt` — the evaluation criteria the judge used
+- `--model` — the model doing attribution reasoning, in `provider/model` format
+- `--runner runner.py` — enables causal ablation; exports `runner` and `judge` for this pipeline
+
+Or with Anthropic:
+
+```bash
+aevyra-origin diagnose trace.json \
+  --score 0.1 \
+  --rubric rubric.txt \
+  --model anthropic/claude-sonnet-4-5 \
+  --runner runner.py
+```
+
+For JSONL sources, convert first with `from_jsonl.py`, then run the same CLI command.
+
+---
+
+## How Origin finds the issue
+
+**Analysis 1 — read the whole trace and ask "what went wrong?"**
+An LLM reads every span's input and output alongside the rubric and score,
+and returns a ranked list of suspicious spans. Fast, but can be fooled when
+the trace contains plausible-sounding reasoning over defective inputs —
+exactly the case here, where the synthesizer wrote a confident answer from a
+confidently wrong document.
+
+**Analysis 2 — break the rubric into criteria and check each step**
+The rubric resolves to two criteria — *cite the digital-subscription policy*
+and *do not cite the physical-returns policy* — and Origin checks each span
+against each criterion individually. The synthesizer fails both. The retrieval
+span fails the first (it didn't return the right doc). The reranker partially
+fails the first (it ranked an off-topic doc first without flagging the
+mismatch).
+
+**Analysis 3 — break things on purpose and re-score**
+Ablation overrides one span's output at a time and re-judges. For this trace
+the most informative ablation is on `vector_search` — replacing its output
+with a null and re-scoring shows whether the downstream pipeline was actually
+depending on it. Because all spans are stored values (no live LLM calls), the
+runner uses **trace replay**: it clones the captured trace and substitutes one
+span's output in-place. Fast and deterministic for a fully static trace.
+
+**Why all three together**
+For RAG failures specifically, this combination is load-bearing. Critic alone
+can be misled by the synthesizer's confident prose. Decomposition catches the
+topic mismatch but doesn't tell you which fix has the most leverage. Ablation
+puts a number on the leverage — which is the question that actually matters
+when deciding between "fix the index" and "rewrite the prompt."
+
+---
+
+## What Origin finds
+
+```
+  Root cause:  The pipeline failed because the vector search step retrieved an
+               irrelevant document about physical product returns as the top
+               result for a digital subscription query, and the correct digital
+               subscription refund policy was absent from the retrieved results.
+
+  Fix:         Fix the retrieval step for 'vector_search' — wrong or missing docs.
+  Evidence:    critic: 'vector_search' at 81% confidence · decomposition: 'answer_writer'
+               cited across 1 span
+
+  ────────────────────────────────────────────────────────────
+  All culprits  (score=0.100, 10.6K tokens, 4 ablation calls)
+
+  1. vector_search  [primary, conf=0.81, fix=retrieval]
+     [critic] The vector search tool returned 'kb_returns_v3' (physical product
+     returns policy) as the top result for the query 'refund policy digital
+     subscription', but the rubric requires citing the digital subscription
+     policy specifically. The output snippet explicitly states 'All physical
+     products may be returned within 30 days...', which directly contradicts the
+     required 'pro-rated within first 7 days, no refund after' policy. Since the
+     retrieved results contain no document describing digital subscription
+     refunds (only physical products, shipping, and billing), this retrieval
+     failure made the hard rubric violation inevitable. The tool executed
+     successfully without errors, indicating the issue lies in the knowledge base
+     index or embedding strategy, not the tool call itself. [decomposition]
+     [Cites digital subscription refund policy specifically; avoids physical
+     product policy] Retrieved physical product policy (kb_returns_v3) as top
+     result for digital subscription query, indicating index/query matching issue
+     in knowledge base.
+
+  2. synthesize  [primary, conf=0.55, fix=unknown, prompt=answer_writer]
+     [decomposition] [Cites digital subscription refund policy specifically;
+     avoids physical product policy] Cited physical product policy for digital
+     subscriptions without recognizing 'physical products' limitation in document
+     snippet, due to insufficient prompt instructions on policy applicability.
+     [ablation] Ablating this span changed the judge score from 0.100 to 0.500
+     (delta=-0.400). The removal IMPROVED the score, so this span's real output
+     is actively degrading the run. Fixing the retrieval step fixes this as a
+     side effect.
+```
+
+---
+
+## Reading the result
+
+**`vector_search` is primary with `fix=retrieval`.** That's the critical
+signal — *prompt rewriting will not fix this*. If you fed Origin's
+prompt-level rollup directly to Reflex, Reflex would rewrite `answer_writer`,
+the answer would still cite the wrong policy (because retrieval still returns
+the wrong doc), and you'd lose a debugging cycle. The `fix_type` is what
+routes the work to the right team.
+
+**`synthesize` is also primary but downstream.** Ablation confirms it:
+blanking the synthesizer's output improved the score from 0.1 to 0.5 — its
+phrasing is actively making things worse. But its `fix_type=unknown` is the
+right signal: there's no independent prompt fix here. The synthesizer cited
+what retrieval gave it. Fix the index and this span cleans up automatically.
+
+**`query_rewrite` and `rerank` are clean.** Neither appears in the culprit
+list. The rewrite "refund policy digital subscription" was exactly the right
+query; Origin examined it and found nothing wrong. Confirming the
+*non-failures* is as useful as finding the failures — it tells you where
+*not* to spend engineering time.
+
+**`fix` tells you what *not* to do.** Here's how the same pipeline maps to
+different fix types depending on what goes wrong:
+
+| Scenario | Culprit | `fix` |
+|---|---|---|
+| Doc not in the index | `vector_search` | `retrieval` |
+| Synthesizer cites without flagging gaps | `synthesize` | `prompt` |
+| Reranker ranks off-topic docs first | `rerank` | `prompt` |
+| Retriever called with malformed args | `vector_search` | `tool_schema` |
+| Embedding model can't distinguish topics | `vector_search` | `retrieval` |
+
+---
+
+## Bringing your own format
+
+Langfuse is one source. The same pattern works for any structured log.
+
+**OpenTelemetry** is the de facto standard for distributed tracing. Witness's
+OTel adapter reads spans emitted by LangGraph, CrewAI, AutoGen, the Vercel AI
+SDK, and any framework using GenAI semantic conventions:
+
+```python
+from aevyra_witness.adapters.otel import from_otel_spans
+
+trace = from_otel_spans(span_exporter.get_finished_spans())
+origin.diagnose(trace=trace, score=score, rubric=rubric, method="all")
+```
+
+**Custom JSONL** — if you control the producer (you're emitting traces from
+your own TypeScript / Go / Rust agent), the simplest schema is one JSON object
+per line, fields named the same as Witness's `TraceNode`. The adapter is ~30
+lines:
+
+```python title="from_jsonl.py"
+def from_jsonl(lines):
+    nodes = []
+    for raw in lines:
+        rec = json.loads(raw)
+        nodes.append(TraceNode(
+            name=rec["name"],
+            id=rec.get("id", ""),
+            parent_id=rec.get("parent_id"),
+            kind=rec.get("kind", "other"),
+            prompt_id=rec.get("prompt_id"),
+            optimize=bool(rec.get("optimize", False)),
+            input=rec.get("input"),
+            output=rec.get("output"),
+            metadata=dict(rec.get("metadata") or {}),
+        ))
+    return AgentTrace(nodes=nodes, ideal=None, metadata={})
+```
+
+Pass `--source jsonl` to use it:
+
+```bash
+python diagnose_existing.py \
+  --model openrouter/qwen/qwen3-235b-a22b-thinking-2507 \
+  --source jsonl --path sample_jsonl.jsonl
+```
+
+This is how you'd diagnose traces from a non-Python agent: emit JSONL from
+TypeScript / Go / Rust, point the script at the file. The attribution engine
+doesn't know or care which language produced the trace — `AgentTrace` is the
+contract.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Support triage tutorial" icon="headset" href="/origin/tutorial-support-triage">
+    A live pipeline failure diagnosed end-to-end with ablation
+  </Card>
+  <Card title="Coding agent tutorial" icon="code" href="/origin/tutorial-coding-agent">
+    A real LLM, a real failure, three attribution methods agreeing
+  </Card>
+  <Card title="Methods" icon="flask" href="/origin/methods">
+    When ablation beats critic, and when it doesn't
+  </Card>
+  <Card title="Reflex quickstart" icon="wand-magic-sparkles" href="/reflex/quickstart">
+    Feed Origin's prompt-level rollup to Reflex and ship a fix
+  </Card>
+</CardGroup>

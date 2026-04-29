@@ -49,18 +49,33 @@ tools nest under the spans that called them. The two `write_code` spans
 share `prompt_id="coder"` on purpose — that's how Reflex will optimize the
 prompt once for every call site.
 
-```
-plan (planner)
-  ├── search_docs       — canned reference for the algorithm
-  └── check_signature   — schema-checks the proposed function signature
-synthesize (synthesizer) — distils plan + docs into an implementation recipe
-write_code (coder)       — first draft
-run_tests                — exec'd in a subprocess, structured pass/fail
-[ if any test fails: ]
-  diagnose_failure (debugger) — reads test output, proposes a fix
-  write_code (coder)          — revised draft (SAME prompt_id as first)
-  run_tests                   — re-runs against the original test cases
-respond (responder)      — final user-facing reply
+```mermaid
+flowchart TD
+    Q["Coding task"] --> P["plan\n(planner)"]
+    P -->|"look up algorithm"| T1["search_docs"]
+    P -->|"validate signature"| T2["check_signature"]
+    T1 --> S["synthesize\n(synthesizer)"]
+    T2 --> S
+    S --> C1["write_code\n(coder)"]
+    C1 --> RT1["run_tests"]
+    RT1 -->|"tests fail"| D["diagnose_failure\n(debugger)"]
+    D --> C2["write_code\n(coder)"]
+    C2 --> RT2["run_tests"]
+    RT2 --> R["respond\n(responder)"]
+    R --> OUT["Final answer"]
+
+    style Q fill:#6E3FF3,color:#fff,stroke:none
+    style OUT fill:#6E3FF3,color:#fff,stroke:none
+    style P fill:#A78BFA,color:#fff,stroke:none
+    style S fill:#A78BFA,color:#fff,stroke:none
+    style C1 fill:#A78BFA,color:#fff,stroke:none
+    style C2 fill:#A78BFA,color:#fff,stroke:none
+    style D fill:#A78BFA,color:#fff,stroke:none
+    style R fill:#A78BFA,color:#fff,stroke:none
+    style T1 fill:#f0f0f0,stroke:#ccc
+    style T2 fill:#f0f0f0,stroke:#ccc
+    style RT1 fill:#f0f0f0,stroke:#ccc
+    style RT2 fill:#f0f0f0,stroke:#ccc
 ```
 
 Run it:
