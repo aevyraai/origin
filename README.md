@@ -3,6 +3,7 @@
 [![CI](https://github.com/aevyraai/origin/actions/workflows/ci.yml/badge.svg)](https://github.com/aevyraai/origin/actions/workflows/ci.yml)
 [![Security](https://github.com/aevyraai/origin/actions/workflows/security.yml/badge.svg)](https://github.com/aevyraai/origin/actions/workflows/security.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-aevyra.mintlify.app-6E3FF3)](https://aevyra.mintlify.app/origin/)
 
 **Why did my agent fail — and what kind of fix does it need?** Point Origin
 at your pipeline and a rubric; it runs the pipeline, grades it, and diagnoses
