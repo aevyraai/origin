@@ -143,41 +143,43 @@ def runner(original: AgentTrace, overrides: dict[str, Any]) -> AgentTrace:
 # ---------------------------------------------------------------------------
 
 
-def _pick_llm():
-    """Pick whichever LLM backend has credentials set.
+_ATTRIBUTION_PROVIDER_MAP: dict[str, dict] = {
+    "anthropic":  {},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1",   "env_key": "OPENROUTER_API_KEY"},
+    "openai":     {},
+    "together":   {"base_url": "https://api.together.xyz/v1",    "env_key": "TOGETHER_API_KEY"},
+    "groq":       {"base_url": "https://api.groq.com/openai/v1", "env_key": "GROQ_API_KEY"},
+    "ollama":     {"base_url": "http://localhost:11434/v1",       "api_key": "ollama"},
+}
 
-    Override the model by setting ORIGIN_LLM_MODEL:
 
-        # Use a cheap/fast model via OpenRouter
-        OPENROUTER_API_KEY=sk-or-... ORIGIN_LLM_MODEL=qwen/qwen3-8b python diagnose.py
-
-        # Use a local Ollama model (no key needed)
-        ORIGIN_LLM_MODEL=ollama/qwen3:8b python diagnose.py
-    """
-    model_override = os.environ.get("ORIGIN_LLM_MODEL")
-
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return openai_llm(
-            model=model_override or "qwen/qwen3-8b",
-            base_url="https://openrouter.ai/api/v1",
-            api_key=os.environ["OPENROUTER_API_KEY"],
+def _pick_llm(model_str: str):
+    """Resolve 'provider/model' and return an LLMFn for attribution."""
+    parts = model_str.split("/", 1)
+    if len(parts) != 2 or parts[0] not in _ATTRIBUTION_PROVIDER_MAP:
+        raise SystemExit(
+            f"Unknown provider in {model_str!r}. "
+            f"Use 'provider/model' format, e.g. 'openrouter/qwen/qwen3-8b'. "
+            f"Supported: {', '.join(_ATTRIBUTION_PROVIDER_MAP)}."
         )
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return anthropic_llm(model=model_override or "claude-sonnet-4-5")
-    if os.environ.get("OPENAI_API_KEY"):
-        return openai_llm(model=model_override or "gpt-4o")
-    if model_override and model_override.startswith("ollama/"):
-        # Local Ollama — no key needed.
-        return openai_llm(
-            model=model_override.removeprefix("ollama/"),
-            base_url="http://localhost:11434/v1",
-            api_key="ollama",
-        )
-    raise SystemExit(
-        "Set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY "
-        "before running the diagnose script.\n"
-        "For local Ollama: set ORIGIN_LLM_MODEL=ollama/qwen3:8b (no key needed)."
-    )
+    provider, model = parts[0], parts[1]
+    cfg = _ATTRIBUTION_PROVIDER_MAP[provider]
+
+    if provider == "anthropic":
+        return anthropic_llm(model=model)
+
+    base_url = cfg.get("base_url")
+    api_key = cfg.get("api_key")
+    if "env_key" in cfg:
+        api_key = os.environ.get(cfg["env_key"])
+        if not api_key:
+            raise SystemExit(f"Provider {provider!r} requires {cfg['env_key']} to be set.")
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise SystemExit("Provider 'openai' requires OPENAI_API_KEY to be set.")
+        base_url = os.environ.get("OPENAI_BASE_URL")
+    return openai_llm(model=model, base_url=base_url, api_key=api_key)
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +222,21 @@ class _Spinner:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run the support-triage agent and diagnose failures.")
+    parser.add_argument(
+        "--model",
+        default="openrouter/qwen/qwen3-235b-a22b-thinking-2507",
+        help=(
+            "Model for attribution (reading the trace), in 'provider/model' format. "
+            "Examples: 'openrouter/qwen/qwen3-235b-a22b-thinking-2507', "
+            "'anthropic/claude-sonnet-4-5', 'openai/gpt-4o'. "
+            "(default: openrouter/qwen/qwen3-235b-a22b-thinking-2507)"
+        ),
+    )
+    args = parser.parse_args()
+
     question = (
         "Hey, I was just charged $29 twice on the same day for my "
         "subscription — I can see both in my bank statement. Can you "
@@ -230,10 +247,9 @@ if __name__ == "__main__":
         "and confirm the refund is being issued."
     )
 
-    llm = _pick_llm()
-    llm_label = getattr(llm, "_model", "unknown model")
-    sys.stderr.write(f"Analyzing with : {llm_label}\n")
-    sys.stderr.write("Method         : all  (critic + decomposition + ablation)\n\n")
+    llm = _pick_llm(args.model)
+    sys.stderr.write(f"Attribution model:  {args.model}\n")
+    sys.stderr.write(f"Pipeline:           deterministic stubs (no LLM calls)\n\n")
 
     # ------------------------------------------------------------------
     # Step 1 — run the pipeline and capture the trace
@@ -290,7 +306,6 @@ if __name__ == "__main__":
         elif rest.startswith("done") and _current_spinner:
             sp = _current_spinner.pop()
             sp.__exit__(None, None, None)
-            sys.stderr.write("          done\n\n")
         elif msg == "merging results ...":
             sys.stderr.write("Step 4/4  Merging results ...\n")
 
