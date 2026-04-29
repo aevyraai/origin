@@ -58,7 +58,7 @@ _PROVIDER_MAP: dict[str, dict] = {
     "anthropic": {},
     "openrouter": {"base_url": "https://openrouter.ai/api/v1", "env_key": "OPENROUTER_API_KEY"},
     "openai": {},
-    "ollama": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
+    "ollama": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},  # pragma: allowlist secret
 }
 
 

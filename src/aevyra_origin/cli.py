@@ -60,7 +60,7 @@ _PROVIDER_MAP: dict[str, dict[str, Any]] = {
     },
     "ollama": {
         "base_url": "http://localhost:11434/v1",
-        "api_key": "ollama",
+        "api_key": "ollama",  # pragma: allowlist secret
     },
 }
 
