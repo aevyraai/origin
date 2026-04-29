@@ -251,7 +251,7 @@ if __name__ == "__main__":
 
     llm = _pick_llm(args.model)
     sys.stderr.write(f"Attribution model:  {args.model}\n")
-    sys.stderr.write(f"Pipeline:           deterministic stubs (no LLM calls)\n\n")
+    sys.stderr.write("Pipeline:           deterministic stubs (no LLM calls)\n\n")
 
     # ------------------------------------------------------------------
     # Step 1 — run the pipeline and capture the trace

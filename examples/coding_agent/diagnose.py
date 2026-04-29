@@ -33,45 +33,13 @@ import json
 import os
 import pathlib
 import sys
-from aevyra_witness import AgentTrace
 from aevyra_witness.runtime import trace as witness_trace
 
 from aevyra_origin import Origin
 from aevyra_origin.llm import anthropic_llm, openai_llm
 
 from pipeline import DEFAULT_IDEAL, DEFAULT_TASK, coding_agent  # type: ignore[import-not-found]
-
-
-# ---------------------------------------------------------------------------
-# Judge — read the LAST run_tests span and score against pass/fail.
-# ---------------------------------------------------------------------------
-#
-# 1.0  all test cases passed and code compiled
-# 0.4  code compiled but one or more test cases failed
-# 0.0  code didn't compile, or no run_tests span exists
-#
-# The judge is intentionally read-only on the trace — it does NOT run the
-# code itself. The pipeline already executed the tests; we just consume
-# the structured output.
-
-
-def judge(trace: AgentTrace) -> float:
-    last_test = next(
-        (n for n in reversed(trace.nodes) if n.name == "run_tests"),
-        None,
-    )
-    if last_test is None or not isinstance(last_test.output, dict):
-        return 0.0
-    out = last_test.output
-    if "compile_error" in out:
-        return 0.0
-    results = out.get("results", [])
-    if not results:
-        return 0.0
-    passed = sum(1 for r in results if r.get("passed"))
-    if passed == len(results):
-        return 1.0
-    return 0.4
+from runner import judge, runner  # type: ignore[import-not-found]
 
 
 RUBRIC = (
@@ -82,14 +50,6 @@ RUBRIC = (
     "(search_docs / check_signature / run_tests) are stubs or harnesses "
     "and should not normally be primary culprits."
 )
-
-
-# ---------------------------------------------------------------------------
-# Ablation runner and judge — imported from runner.py so the CLI and
-# diagnose.py share the same implementation.
-# ---------------------------------------------------------------------------
-
-from runner import judge, runner  # type: ignore[import-not-found]
 
 
 # ---------------------------------------------------------------------------
