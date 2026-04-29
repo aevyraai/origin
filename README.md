@@ -23,7 +23,7 @@ Origin   →  finds where it went wrong      (you are here)
 ```mermaid
 flowchart LR
     TR[AgentTrace\nfrom Witness]:::data
-    SC[score + rubric\nfrom Verdict]:::data
+    SC[score + rubric\nany scorer]:::data
 
     CR[critic\n1 LLM call]:::method
     DC[decomposition\n1 LLM call]:::method
@@ -45,6 +45,9 @@ flowchart LR
     classDef prompt  fill:#2ECC71,color:#fff,stroke:none
     classDef other   fill:#444,color:#fff,stroke:none
 ```
+
+Origin takes a score from any source — [Verdict](https://github.com/aevyraai/verdict),
+a custom function, or a plain lambda. Verdict is the recommended path but not required.
 
 ## Use cases
 
