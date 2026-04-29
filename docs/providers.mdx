@@ -33,7 +33,7 @@ llm = openai_llm(model="qwen/qwen3-8b",                 # OpenRouter
                  api_key=os.environ["OPENROUTER_API_KEY"])
 llm = openai_llm(model="qwen3:8b",                      # Ollama (local)
                  base_url="http://localhost:11434/v1",
-                 api_key="ollama")
+                 api_key="ollama")  # pragma: allowlist secret
 ```
 
 ## Provider reference
