@@ -16,10 +16,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Annotated, Any, Optional
+
+# Suppress internal validator warnings (e.g. node_name/id mismatches from the
+# LLM) so they don't bleed into the user-facing CLI output.
+logging.getLogger("aevyra_origin").setLevel(logging.ERROR)
 
 
 def _default_run_dir() -> Path:
@@ -178,6 +183,18 @@ def diagnose(
         Optional[Path],
         typer.Option("--output", help="Write full Attribution JSON to this file."),
     ] = None,
+    runner: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--runner",
+            help=(
+                "Path to a Python file exporting 'runner' and 'judge' functions. "
+                "Required for ablation. The file must define: "
+                "runner(original: AgentTrace, overrides: dict) -> AgentTrace and "
+                "judge(trace: AgentTrace) -> float."
+            ),
+        ),
+    ] = None,
     run_dir: Annotated[
         Optional[Path],
         typer.Option(
@@ -301,6 +318,31 @@ def diagnose(
     else:
         run = store.new_run()
 
+    # --- Load runner/judge (optional) ----------------------------------------
+    runner_fn = None
+    judge_fn = None
+    if runner is not None:
+        if not runner.exists():
+            typer.echo(f"Error: runner file not found: {runner}", err=True)
+            raise typer.Exit(code=1)
+        try:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("_origin_runner", runner)
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            runner_fn = getattr(mod, "runner", None)
+            judge_fn = getattr(mod, "judge", None)
+        except Exception as exc:
+            typer.echo(f"Error loading runner file {runner}: {exc}", err=True)
+            raise typer.Exit(code=1)
+        if runner_fn is None or judge_fn is None:
+            typer.echo(
+                f"Error: {runner} must define both 'runner' and 'judge' functions.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
     # --- Run attribution ------------------------------------------------------
     typer.echo(f"Analyzing with: {model_label}", err=True)
 
@@ -316,12 +358,12 @@ def diagnose(
             label = _METHOD_LABELS.get(method_key, method_key)
             typer.echo(f"  {label} ...", err=True)
         elif rest.startswith("done"):
-            typer.echo("  done", err=True)
+            pass
         elif msg == "merging results ...":
             typer.echo("  combining results ...", err=True)
 
     try:
-        origin = Origin(llm=llm)
+        origin = Origin(llm=llm, runner=runner_fn, judge=judge_fn)
         result = origin.diagnose(
             trace=trace,
             score=score,
@@ -336,6 +378,13 @@ def diagnose(
 
     # --- Output ---------------------------------------------------------------
     typer.echo(result.render())
+
+    if method in ("all", "ablation") and runner is None:
+        typer.echo(
+            "\nNote: ablation was skipped — pass --runner runner.py to enable causal confirmation. "
+            "Confidence scores are based on critic + decomposition only.",
+            err=True,
+        )
 
     if run is not None:
         typer.echo(f"\nRun saved to {run.path}")

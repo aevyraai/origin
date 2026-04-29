@@ -1,0 +1,8 @@
+The agent should produce a correct dynamic-programming solution for the coin change problem.
+
+A high-scoring response:
+- Uses dynamic programming, not a greedy approach (greedy gives wrong answers for inputs like coins=[1,3,4], amount=6)
+- Returns the correct minimum number of coins, or -1 if the amount cannot be made
+- Passes all test cases: the greedy-failure case, a no-solution case, and amount=0
+- If the first draft fails, the revision correctly diagnoses and fixes the algorithmic error
+- The final reply accurately confirms whether the function works

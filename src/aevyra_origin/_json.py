@@ -31,6 +31,7 @@ class JSONParseError(ValueError):
 
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 def extract_json(text: str) -> dict[str, Any]:
@@ -54,6 +55,18 @@ def extract_json(text: str) -> dict[str, Any]:
     """
     if not isinstance(text, str):
         raise JSONParseError(f"expected string response, got {type(text).__name__}")
+
+    # Reasoning models (QwQ, Qwen3-thinking, DeepSeek-R1) emit <think>...</think>
+    # blocks. Strip them before parsing — the JSON answer follows after.
+    # If nothing remains after stripping (some models put everything inside the
+    # think block), fall back to extracting JSON from inside the think block.
+    think_match = _THINK_RE.search(text)
+    text_no_think = _THINK_RE.sub("", text).strip()
+    if not text_no_think and think_match:
+        # Entire response was inside <think> — extract JSON from within it.
+        text = think_match.group(0)[len("<think>") : -len("</think>")]
+    else:
+        text = text_no_think
 
     # 1. Raw
     stripped = text.strip()

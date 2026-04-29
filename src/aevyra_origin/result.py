@@ -292,82 +292,89 @@ class Attribution:
         )
 
     def render(self) -> str:
-        """Human-readable multi-line rendering, suitable for CLI output."""
-        token_parts = []
-        if self.llm_tokens:
-            token_parts.append(f"llm={_fmt_tokens(self.llm_tokens)}")
-        if self.ablation_calls:
-            token_parts.append(f"ablation_calls={self.ablation_calls}")
-        token_str = f"  tokens={', '.join(token_parts)}" if token_parts else ""
-        lines = [
-            f"Origin attribution  (method={self.method}, score={self.score:.3f}{token_str})",
-            f"  Summary: {self.summary}",
-            "",
-        ]
+        """Human-readable output designed for actionability — fix first, details second."""
+        lines: list[str] = []
+
         if not self.culprits:
-            lines.append("  (no culprits identified)")
+            lines.append("Origin found no culprits.")
             return "\n".join(lines)
-        for i, c in enumerate(self.culprits, 1):
-            lines.append(
-                f"  {i}. {c.node_name}  [{c.severity}, confidence={c.confidence:.2f}, fix={c.fix_type}]"
-            )
-            lines.append(f"     {c.reasoning}")
 
-        # What to do — plain-English action per culprit, grouped by fix_type.
-        _FIX_ADVICE: dict[str, str] = {
-            "prompt": (
-                "Rewrite the prompt for this span so the model stays grounded in its tool "
-                "results and doesn't invent information. If a prompt_id is shown below, one "
-                "rewrite fixes every call site that shares it."
-            ),
-            "retrieval": (
-                "The retrieval step returned wrong or missing documents — the prompt isn't "
-                "the problem. Fix the index, chunking strategy, or query instead."
-            ),
-            "tool_schema": (
-                "The tool's input schema caused the model to call it incorrectly. Update "
-                "the schema or the tool's description so the model invokes it with the "
-                "right arguments."
-            ),
-            "routing": (
-                "The pipeline sent the request to the wrong branch or tool. Fix the routing "
-                "logic, not the span prompts."
-            ),
-            "infrastructure": (
-                "This span hit an infrastructure issue (timeout, rate limit, auth error, "
-                "quota). Check your infra — prompt changes won't help here."
-            ),
-            "unknown": (
-                "Origin couldn't determine the fix type from the trace. Read the reasoning "
-                "above and inspect the span manually."
-            ),
-        }
-
-        lines.append("")
-        lines.append("  --- What to do ---")
-        seen_fix_types: set[str] = set()
-        for c in self.culprits:
-            if c.severity == "minor":
-                continue  # minor culprits are usually side-effects; skip noise
-            prompt_hint = f"  (prompt: {c.prompt_id})" if c.prompt_id else ""
-            lines.append(f"  {c.node_name}{prompt_hint}  →  fix={c.fix_type}")
-            if c.fix_type not in seen_fix_types:
-                advice = _FIX_ADVICE.get(c.fix_type, "")
-                if advice:
-                    for part in _wrap(advice, width=72):
-                        lines.append(f"    {part}")
-                seen_fix_types.add(c.fix_type)
-
-        # If there's a prompt-level rollup worth showing, append it.
+        # ── Action block ──────────────────────────────────────────────────────
+        # Lead with the single most important thing: what to fix and why.
+        top = self.top_culprit()
         prompts = self.by_prompt()
-        if prompts:
+
+        # Root cause: first sentence of the summary.
+        root_cause = self.summary.split(".")[0].rstrip() + "." if self.summary else ""
+        if root_cause:
+            lines.append(f"  Root cause:  {root_cause}")
             lines.append("")
-            lines.append("  --- Prompts to fix ---")
-            for p in prompts:
-                span_word = "span" if len(p.spans) == 1 else "spans"
-                lines.append(
-                    f"  {p.prompt_id}  [{p.severity}, {len(p.spans)} {span_word} affected]"
-                )
+
+        # Fix: the highest-confidence prompt to rewrite, or a non-prompt action.
+        if prompts:
+            p = prompts[0]
+            lines.append(
+                f"  Fix:         Rewrite the '{p.prompt_id}' prompt  "
+                f"(confidence {p.confidence:.0%})"
+            )
+        elif top:
+            _FIX_ACTION: dict[str, str] = {
+                "infrastructure": f"Check infrastructure for '{top.node_name}' — prompt changes won't help.",
+                "tool_schema": f"Update the '{top.node_name}' tool schema so the model calls it correctly.",
+                "retrieval": f"Fix the retrieval step for '{top.node_name}' — wrong or missing docs.",
+                "routing": f"Fix the routing logic that directed to '{top.node_name}'.",
+                "prompt": f"Rewrite the prompt for '{top.node_name}'.",
+                "unknown": f"Inspect '{top.node_name}' manually — fix type could not be determined.",
+            }
+            lines.append(f"  Fix:         {_FIX_ACTION.get(top.fix_type, top.fix_type)}")
+
+        # Evidence: one line showing which methods confirmed the finding.
+        evidence: list[str] = []
+        primary = self.primary_culprits()
+        if primary:
+            name = primary[0].node_name
+            conf = primary[0].confidence
+            evidence.append(f"critic: '{name}' at {conf:.0%} confidence")
+        if prompts:
+            p0 = prompts[0]
+            n = len(p0.spans)
+            evidence.append(
+                f"decomposition: '{p0.prompt_id}' cited across {n} span{'s' if n != 1 else ''}"
+            )
+        # Only cite ablation for spans where removal *hurt* the score (delta=+
+        # means the original score was higher — the span was carrying positive
+        # load). Spans where removal helped (delta=-) are noted in the culprit
+        # list but shouldn't anchor the root-cause evidence line.
+        ablation_hits = [
+            c for c in self.culprits if self.ablation_calls and "delta=+" in c.reasoning
+        ]
+        if ablation_hits:
+            a = ablation_hits[0]
+            evidence.append(f"ablation: blanking '{a.node_name}' hurt the score")
+        if evidence:
+            lines.append(f"  Evidence:    {' · '.join(evidence)}")
+
+        # ── Full breakdown ────────────────────────────────────────────────────
+        token_parts: list[str] = []
+        if self.llm_tokens:
+            token_parts.append(f"{_fmt_tokens(self.llm_tokens)} tokens")
+        if self.ablation_calls:
+            token_parts.append(f"{self.ablation_calls} ablation calls")
+        meta = f"score={self.score:.3f}"
+        if token_parts:
+            meta += f", {', '.join(token_parts)}"
+        sep = "─" * 60
+        lines += ["", f"  {sep}", f"  All culprits  ({meta})", ""]
+
+        for i, c in enumerate(self.culprits, 1):
+            prompt_hint = f", prompt={c.prompt_id}" if c.prompt_id else ""
+            lines.append(
+                f"  {i}. {c.node_name}  "
+                f"[{c.severity}, conf={c.confidence:.2f}, fix={c.fix_type}{prompt_hint}]"
+            )
+            for part in _wrap(c.reasoning, width=76):
+                lines.append(f"     {part}")
+
         return "\n".join(lines)
 
 
