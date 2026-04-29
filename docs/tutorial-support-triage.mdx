@@ -33,13 +33,26 @@ cd examples/support_triage
 
 The triage agent is a plan-act-respond loop built on three MCP tool stubs:
 
-```
-plan (round 1)
-  ├── stripe_lookup   — pull the user's recent charges
-  ├── kb_search       — fetch the refund policy doc
-  └── thread_search   — prior support threads
-plan (round 2)        — decide eligibility from tool results
-respond               — draft the user-facing reply
+```mermaid
+flowchart TD
+    Q["Customer complaint"] --> P1["plan round 1\n(planner)"]
+    P1 -->|"lookup charges"| T1["stripe_lookup"]
+    P1 -->|"fetch policy"| T2["kb_search"]
+    P1 -->|"search history"| T3["thread_search"]
+    T1 -->|"2× $29 Pro subscription"| P2["plan round 2\n(planner)"]
+    T2 -->|"duplicates eligible for refund"| P2
+    T3 -->|"no prior threads"| P2
+    P2 -->|"eligible_for_refund: false"| R["respond\n(responder)"]
+    R --> OUT["Reply to customer"]
+
+    style Q fill:#6E3FF3,color:#fff,stroke:none
+    style OUT fill:#6E3FF3,color:#fff,stroke:none
+    style P1 fill:#A78BFA,color:#fff,stroke:none
+    style P2 fill:#A78BFA,color:#fff,stroke:none
+    style R fill:#A78BFA,color:#fff,stroke:none
+    style T1 fill:#f0f0f0,stroke:#ccc
+    style T2 fill:#f0f0f0,stroke:#ccc
+    style T3 fill:#f0f0f0,stroke:#ccc
 ```
 
 Run it:

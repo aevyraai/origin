@@ -310,15 +310,11 @@ class Attribution:
             lines.append(f"  Root cause:  {root_cause}")
             lines.append("")
 
-        # Fix: the highest-confidence prompt to rewrite, or a non-prompt action.
-        if prompts:
-            p = prompts[0]
-            lines.append(
-                f"  Fix:         Rewrite the '{p.prompt_id}' prompt  "
-                f"(confidence {p.confidence:.0%})"
-            )
-        elif top:
-            _FIX_ACTION: dict[str, str] = {
+        # Fix: lead with the top culprit's action. Only suggest a prompt
+        # rewrite when the top culprit is actually a prompt issue.
+        _FIX_ACTION: dict[str, str] = {}
+        if top:
+            _FIX_ACTION = {
                 "infrastructure": f"Check infrastructure for '{top.node_name}' — prompt changes won't help.",
                 "tool_schema": f"Update the '{top.node_name}' tool schema so the model calls it correctly.",
                 "retrieval": f"Fix the retrieval step for '{top.node_name}' — wrong or missing docs.",
@@ -326,6 +322,13 @@ class Attribution:
                 "prompt": f"Rewrite the prompt for '{top.node_name}'.",
                 "unknown": f"Inspect '{top.node_name}' manually — fix type could not be determined.",
             }
+        if top and top.fix_type == "prompt" and prompts:
+            p = prompts[0]
+            lines.append(
+                f"  Fix:         Rewrite the '{p.prompt_id}' prompt  "
+                f"(confidence {p.confidence:.0%})"
+            )
+        elif top:
             lines.append(f"  Fix:         {_FIX_ACTION.get(top.fix_type, top.fix_type)}")
 
         # Evidence: one line showing which methods confirmed the finding.
