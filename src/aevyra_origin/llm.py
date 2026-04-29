@@ -110,6 +110,7 @@ class _OpenAILLM:
         if not content:
             # Still empty — print diagnostic so the user can investigate.
             import sys as _sys
+
             finish_reason = getattr(resp.choices[0], "finish_reason", None)
             _sys.stderr.write(
                 f"Warning: model '{self._model}' returned empty content "

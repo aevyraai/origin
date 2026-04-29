@@ -26,6 +26,7 @@ from typing import Annotated, Any, Optional
 # LLM) so they don't bleed into the user-facing CLI output.
 logging.getLogger("aevyra_origin").setLevel(logging.ERROR)
 
+
 def _default_run_dir() -> Path:
     """Return <repo-root>/.origin, falling back to cwd/.origin if not in a git repo."""
     here = Path.cwd()

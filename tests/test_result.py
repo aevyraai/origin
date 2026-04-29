@@ -222,7 +222,7 @@ class TestAttribution:
     def test_render_with_culprits(self):
         attr = _make_attribution()
         rendered = attr.render()
-        assert "method=critic" in rendered
+        assert "All culprits" in rendered
         assert "score=0.300" in rendered
         assert "primary" in rendered
         assert "a" in rendered
@@ -230,7 +230,7 @@ class TestAttribution:
     def test_render_no_culprits(self):
         attr = _make_attribution(culprits=[])
         rendered = attr.render()
-        assert "no culprits identified" in rendered
+        assert "Origin found no culprits." in rendered
 
     def test_render_with_node_id(self):
         # node_id is stored on the object but no longer shown in render output

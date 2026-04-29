@@ -51,7 +51,9 @@ def runner(original: AgentTrace, overrides: dict[str, Any]) -> AgentTrace:
     """
     # Restore the pipeline model from trace metadata so ablation re-runs use
     # the same model that generated the original trace.
-    pipeline_model = original.metadata.get("pipeline_model", "openrouter/meta-llama/llama-3.1-8b-instruct")
+    pipeline_model = original.metadata.get(
+        "pipeline_model", "openrouter/meta-llama/llama-3.1-8b-instruct"
+    )
     pipeline.resolve_model(pipeline_model)
 
     # Show which span is being blanked.

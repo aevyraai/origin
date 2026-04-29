@@ -64,7 +64,7 @@ def extract_json(text: str) -> dict[str, Any]:
     text_no_think = _THINK_RE.sub("", text).strip()
     if not text_no_think and think_match:
         # Entire response was inside <think> — extract JSON from within it.
-        text = think_match.group(0)[len("<think>"):-len("</think>")]
+        text = think_match.group(0)[len("<think>") : -len("</think>")]
     else:
         text = text_no_think
 

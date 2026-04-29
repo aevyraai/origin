@@ -144,12 +144,12 @@ def runner(original: AgentTrace, overrides: dict[str, Any]) -> AgentTrace:
 
 
 _ATTRIBUTION_PROVIDER_MAP: dict[str, dict] = {
-    "anthropic":  {},
-    "openrouter": {"base_url": "https://openrouter.ai/api/v1",   "env_key": "OPENROUTER_API_KEY"},
-    "openai":     {},
-    "together":   {"base_url": "https://api.together.xyz/v1",    "env_key": "TOGETHER_API_KEY"},
-    "groq":       {"base_url": "https://api.groq.com/openai/v1", "env_key": "GROQ_API_KEY"},
-    "ollama":     {"base_url": "http://localhost:11434/v1",       "api_key": "ollama"},
+    "anthropic": {},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "env_key": "OPENROUTER_API_KEY"},
+    "openai": {},
+    "together": {"base_url": "https://api.together.xyz/v1", "env_key": "TOGETHER_API_KEY"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "env_key": "GROQ_API_KEY"},
+    "ollama": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
 }
 
 
@@ -224,7 +224,9 @@ class _Spinner:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run the support-triage agent and diagnose failures.")
+    parser = argparse.ArgumentParser(
+        description="Run the support-triage agent and diagnose failures."
+    )
     parser.add_argument(
         "--model",
         default="openrouter/qwen/qwen3-235b-a22b-thinking-2507",

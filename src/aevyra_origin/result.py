@@ -313,16 +313,18 @@ class Attribution:
         # Fix: the highest-confidence prompt to rewrite, or a non-prompt action.
         if prompts:
             p = prompts[0]
-            lines.append(f"  Fix:         Rewrite the '{p.prompt_id}' prompt  "
-                         f"(confidence {p.confidence:.0%})")
+            lines.append(
+                f"  Fix:         Rewrite the '{p.prompt_id}' prompt  "
+                f"(confidence {p.confidence:.0%})"
+            )
         elif top:
             _FIX_ACTION: dict[str, str] = {
                 "infrastructure": f"Check infrastructure for '{top.node_name}' — prompt changes won't help.",
-                "tool_schema":    f"Update the '{top.node_name}' tool schema so the model calls it correctly.",
-                "retrieval":      f"Fix the retrieval step for '{top.node_name}' — wrong or missing docs.",
-                "routing":        f"Fix the routing logic that directed to '{top.node_name}'.",
-                "prompt":         f"Rewrite the prompt for '{top.node_name}'.",
-                "unknown":        f"Inspect '{top.node_name}' manually — fix type could not be determined.",
+                "tool_schema": f"Update the '{top.node_name}' tool schema so the model calls it correctly.",
+                "retrieval": f"Fix the retrieval step for '{top.node_name}' — wrong or missing docs.",
+                "routing": f"Fix the routing logic that directed to '{top.node_name}'.",
+                "prompt": f"Rewrite the prompt for '{top.node_name}'.",
+                "unknown": f"Inspect '{top.node_name}' manually — fix type could not be determined.",
             }
             lines.append(f"  Fix:         {_FIX_ACTION.get(top.fix_type, top.fix_type)}")
 
@@ -336,14 +338,15 @@ class Attribution:
         if prompts:
             p0 = prompts[0]
             n = len(p0.spans)
-            evidence.append(f"decomposition: '{p0.prompt_id}' cited across {n} span{'s' if n != 1 else ''}")
+            evidence.append(
+                f"decomposition: '{p0.prompt_id}' cited across {n} span{'s' if n != 1 else ''}"
+            )
         # Only cite ablation for spans where removal *hurt* the score (delta=+
         # means the original score was higher — the span was carrying positive
         # load). Spans where removal helped (delta=-) are noted in the culprit
         # list but shouldn't anchor the root-cause evidence line.
         ablation_hits = [
-            c for c in self.culprits
-            if self.ablation_calls and "delta=+" in c.reasoning
+            c for c in self.culprits if self.ablation_calls and "delta=+" in c.reasoning
         ]
         if ablation_hits:
             a = ablation_hits[0]

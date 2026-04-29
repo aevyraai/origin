@@ -99,12 +99,12 @@ from runner import judge, runner  # type: ignore[import-not-found]
 
 
 _ATTRIBUTION_PROVIDER_MAP: dict[str, dict] = {
-    "anthropic":  {},
-    "openrouter": {"base_url": "https://openrouter.ai/api/v1",  "env_key": "OPENROUTER_API_KEY"},
-    "openai":     {},
-    "together":   {"base_url": "https://api.together.xyz/v1",   "env_key": "TOGETHER_API_KEY"},
-    "groq":       {"base_url": "https://api.groq.com/openai/v1","env_key": "GROQ_API_KEY"},
-    "ollama":     {"base_url": "http://localhost:11434/v1",      "api_key": "ollama"},
+    "anthropic": {},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "env_key": "OPENROUTER_API_KEY"},
+    "openai": {},
+    "together": {"base_url": "https://api.together.xyz/v1", "env_key": "TOGETHER_API_KEY"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "env_key": "GROQ_API_KEY"},
+    "ollama": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
 }
 
 
@@ -168,6 +168,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     import pipeline as _pipeline_mod
+
     _pipeline_mod.resolve_model(args.pipeline_model)
 
     task = args.task
@@ -178,7 +179,9 @@ if __name__ == "__main__":
     sys.stderr.write(f"Task:               {task}\n\n")
 
     sys.stderr.write("Step 1/4  Running coding agent (generating and testing code) ...\n")
-    with witness_trace(ideal=ideal, metadata={"scenario": "coin_change", "pipeline_model": args.pipeline_model}) as tracer:
+    with witness_trace(
+        ideal=ideal, metadata={"scenario": "coin_change", "pipeline_model": args.pipeline_model}
+    ) as tracer:
         reply = coding_agent(task)
     captured = tracer.finish()
 

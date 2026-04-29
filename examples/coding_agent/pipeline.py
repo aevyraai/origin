@@ -68,17 +68,17 @@ from aevyra_witness.runtime import span, trace
 # ---------------------------------------------------------------------------
 
 _PROVIDER_MAP: dict[str, dict[str, Any]] = {
-    "openrouter": {"base_url": "https://openrouter.ai/api/v1",      "env_key": "OPENROUTER_API_KEY"},
-    "openai":     {},
-    "together":   {"base_url": "https://api.together.xyz/v1",        "env_key": "TOGETHER_API_KEY"},
-    "groq":       {"base_url": "https://api.groq.com/openai/v1",     "env_key": "GROQ_API_KEY"},
-    "ollama":     {"base_url": "http://localhost:11434/v1",           "api_key": "ollama"},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "env_key": "OPENROUTER_API_KEY"},
+    "openai": {},
+    "together": {"base_url": "https://api.together.xyz/v1", "env_key": "TOGETHER_API_KEY"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "env_key": "GROQ_API_KEY"},
+    "ollama": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
 }
 
 # Module-level state set by resolve_model() or argparse in __main__.
 MODEL = "qwen/qwen3-8b"
 _BASE_URL: str | None = "https://openrouter.ai/api/v1"
-_API_KEY:  str | None = None
+_API_KEY: str | None = None
 
 
 def resolve_model(model_str: str) -> None:
@@ -395,7 +395,9 @@ def coding_agent(task: str, overrides: dict[str, Any] | None = None) -> str:
         if w._id in _ov:
             code = _ov[w._id] if isinstance(_ov[w._id], str) else ""
         else:
-            code = _strip_fences(_chat_logged("write_code", CODER_PROMPT, json.dumps(w.input, indent=2)))
+            code = _strip_fences(
+                _chat_logged("write_code", CODER_PROMPT, json.dumps(w.input, indent=2))
+            )
         w.output = code
 
     # --- Run tests -------------------------------------------------------
@@ -412,7 +414,9 @@ def coding_agent(task: str, overrides: dict[str, Any] | None = None) -> str:
             if d._id in _ov:
                 diagnosis = _ov[d._id] if isinstance(_ov[d._id], str) else ""
             else:
-                diagnosis = _chat_logged("diagnose_failure", DEBUGGER_PROMPT, json.dumps(d.input, indent=2))
+                diagnosis = _chat_logged(
+                    "diagnose_failure", DEBUGGER_PROMPT, json.dumps(d.input, indent=2)
+                )
             d.output = diagnosis
 
         with span("write_code", kind=KIND_REASON, prompt_id="coder", optimize=True) as w2:
@@ -426,7 +430,11 @@ def coding_agent(task: str, overrides: dict[str, Any] | None = None) -> str:
             if w2._id in _ov:
                 code = _ov[w2._id] if isinstance(_ov[w2._id], str) else ""
             else:
-                code = _strip_fences(_chat_logged("write_code (revision)", CODER_PROMPT, json.dumps(w2.input, indent=2)))
+                code = _strip_fences(
+                    _chat_logged(
+                        "write_code (revision)", CODER_PROMPT, json.dumps(w2.input, indent=2)
+                    )
+                )
             w2.output = code
 
         with span("run_tests", kind=KIND_TOOL) as t2:
@@ -485,7 +493,9 @@ if __name__ == "__main__":
     resolve_model(args.model)
     sys.stderr.write(f"Model: {args.model}\n")
     sys.stderr.write(f"Task:  {args.task}\n\n")
-    with trace(ideal=DEFAULT_IDEAL, metadata={"scenario": "coin_change", "pipeline_model": args.model}) as tracer:
+    with trace(
+        ideal=DEFAULT_IDEAL, metadata={"scenario": "coin_change", "pipeline_model": args.model}
+    ) as tracer:
         answer = coding_agent(args.task)
     at = tracer.finish()
 
@@ -506,5 +516,6 @@ if __name__ == "__main__":
     # Persist the trace so the CLI can diagnose it:
     #   aevyra-origin diagnose trace.json --score <0-1> --rubric rubric.txt
     import pathlib as _pathlib
+
     _pathlib.Path("trace.json").write_text(json.dumps(at.to_dict(), indent=2, default=str))
     print("trace saved → trace.json")
