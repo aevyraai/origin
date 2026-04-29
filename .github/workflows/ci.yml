@@ -20,20 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Check out witness (not on PyPI yet — install from source)
-        uses: actions/checkout@v6
-        with:
-          repository: aevyraai/witness
-          path: witness
-          token: ${{ secrets.GH_PAT }}
-
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
-
-      - name: Install witness from source
-        run: pip install -e ./witness
 
       - name: Install dev dependencies
         run: pip install -e ".[dev]"
@@ -58,20 +48,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Check out witness (not on PyPI yet — install from source)
-        uses: actions/checkout@v6
-        with:
-          repository: aevyraai/witness
-          path: witness
-          token: ${{ secrets.GH_PAT }}
-
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-
-      - name: Install witness from source
-        run: pip install -e ./witness
 
       - name: Install origin
         run: pip install -e ".[dev]"
