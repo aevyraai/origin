@@ -72,7 +72,10 @@ _PROVIDER_MAP: dict[str, dict[str, Any]] = {
     "openai": {},
     "together": {"base_url": "https://api.together.xyz/v1", "env_key": "TOGETHER_API_KEY"},
     "groq": {"base_url": "https://api.groq.com/openai/v1", "env_key": "GROQ_API_KEY"},
-    "ollama": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},  # pragma: allowlist secret
+    "ollama": {
+        "base_url": "http://localhost:11434/v1",
+        "api_key": "ollama",  # pragma: allowlist secret
+    },
 }
 
 # Module-level state set by resolve_model() or argparse in __main__.
