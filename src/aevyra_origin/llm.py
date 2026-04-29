@@ -101,14 +101,29 @@ class _OpenAILLM:
             self.tokens_used += getattr(usage, "prompt_tokens", 0) + getattr(
                 usage, "completion_tokens", 0
             )
-        return resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
+        content = msg.content or ""
+        if not content:
+            # Some reasoning models (e.g. Qwen3-thinking on OpenRouter) return
+            # their answer in reasoning_content when content is empty.
+            content = getattr(msg, "reasoning_content", None) or ""
+        if not content:
+            # Still empty — print diagnostic so the user can investigate.
+            import sys as _sys
+            finish_reason = getattr(resp.choices[0], "finish_reason", None)
+            _sys.stderr.write(
+                f"Warning: model '{self._model}' returned empty content "
+                f"(finish_reason={finish_reason!r}). "
+                f"Full message fields: {list(vars(msg).keys())}\n"
+            )
+        return content
 
 
 def anthropic_llm(
     model: str = "claude-sonnet-4-5",
     *,
     api_key: str | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     temperature: float = 0.0,
 ) -> _AnthropicLLM:
     """Factory: Claude via the Anthropic Python SDK.
@@ -147,7 +162,7 @@ def openai_llm(
     *,
     api_key: str | None = None,
     base_url: str | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     temperature: float = 0.0,
 ) -> _OpenAILLM:
     """Factory: any OpenAI-compatible endpoint.
