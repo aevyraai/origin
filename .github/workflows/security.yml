@@ -1,0 +1,123 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 9 * * 1"  # Every Monday at 9am UTC — catches new CVEs without a code change
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write  # required to upload SARIF results to the Security tab
+  actions: read           # required for CodeQL to gather workflow telemetry
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # CodeQL — static analysis of Python source for security vulnerabilities
+  # ---------------------------------------------------------------------------
+  codeql:
+    name: CodeQL (Python)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:python"
+
+  # ---------------------------------------------------------------------------
+  # pip-audit — scan dev dependencies for known vulnerabilities
+  # ---------------------------------------------------------------------------
+  pip-audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package
+        run: pip install -e ".[dev]"
+
+      - name: Audit dependencies
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: "."
+
+  # ---------------------------------------------------------------------------
+  # Bandit — Python-specific SAST: catches eval/exec, subprocess injection,
+  # hardcoded passwords, insecure deserialisation, and similar AI-code risks.
+  # -ll = medium + high severity only (skips low-severity noise).
+  # ---------------------------------------------------------------------------
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit
+        run: bandit -r src/ -ll --format txt
+
+  # ---------------------------------------------------------------------------
+  # detect-secrets — scans for accidentally committed credentials, API keys,
+  # tokens, and other secrets. Fails if any NEW secrets appear vs. the
+  # baseline (baseline committed at .secrets.baseline).
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secret scanning (detect-secrets)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets
+
+      - name: Scan for secrets
+        run: |
+          detect-secrets scan \
+            --exclude-files '\.secrets\.baseline' \
+            --exclude-files '\.github/' \
+            > /tmp/secrets-scan.json
+          python3 - <<'EOF'
+          import json, sys
+          data = json.load(open("/tmp/secrets-scan.json"))
+          results = data.get("results", {})
+          if results:
+              print("Secrets detected — add '# pragma: allowlist secret' to false positives.")
+              for f, findings in results.items():
+                  for s in findings:
+                      print(f"  {f}:{s['line_number']} ({s['type']})")
+              sys.exit(1)
+          print("No secrets found.")
+          EOF
