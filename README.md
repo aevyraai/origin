@@ -5,18 +5,9 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-aevyra.mintlify.app-6E3FF3)](https://aevyra.mintlify.app/origin/)
 
-**Why did my agent fail — and what kind of fix does it need?** Point Origin
-at your pipeline and a rubric; it runs the pipeline, grades it, and diagnoses
-which span(s) caused the failure — with severity, confidence, reasoning, and a
-`fix_type` that tells you whether the problem lives in a prompt, a retrieval
-index, a tool schema, a routing decision, or infrastructure. You get back a
-ranked list of culprit spans with a one-paragraph summary and an actionable
-repair classification.
-
-Works with any LLM — Claude, OpenAI, OpenRouter, local Ollama or vLLM,
-or any OpenAI-compatible endpoint.
-
-Origin is the diagnosis stage in the [Aevyra](https://aevyra.ai) stack:
+When an agent fails, the cause is rarely obvious. Origin takes the trace of
+what ran, the score of how it did, and a rubric of what good looks like — and
+tells you which span failed, why, and what kind of fix it needs.
 
 ```
 Witness  →  captures what happened         (aevyra-witness)
@@ -28,6 +19,50 @@ Origin   →  finds where it went wrong      (you are here)
            └─ fix_type="routing"?    → fix the router
            └─ fix_type="infrastructure"? → fix ops
 ```
+
+```mermaid
+flowchart LR
+    TR[AgentTrace\nfrom Witness]:::data
+    SC[score + rubric\nany scorer]:::data
+
+    CR[critic\n1 LLM call]:::method
+    DC[decomposition\n1 LLM call]:::method
+    AB[ablation\nreplay runner]:::method
+
+    MG([merge +\ncorroborate]):::origin
+
+    PR[fix_type=prompt\n→ Reflex]:::prompt
+    OT[retrieval · routing\ntool_schema · infra\n→ targeted fix]:::other
+
+    TR & SC --> CR & DC & AB
+    CR & DC & AB --> MG
+    MG --> PR
+    MG --> OT
+
+    classDef data    fill:#6E3FF3,color:#fff,stroke:none
+    classDef method  fill:#9B6BFF,color:#fff,stroke:none
+    classDef origin  fill:#3FBFFF,color:#fff,stroke:none
+    classDef prompt  fill:#2ECC71,color:#fff,stroke:none
+    classDef other   fill:#444,color:#fff,stroke:none
+```
+
+Origin takes a score from any source — [Verdict](https://github.com/aevyraai/verdict),
+a custom function, or a plain lambda. Verdict is the recommended path but not required.
+
+## Use cases
+
+- **Debugging a failing agent** — know whether the planner, a retrieval step,
+  or a tool call caused the bad output, without adding print statements or
+  re-running manually.
+- **Prioritising fixes** — not all failures are prompt failures. Origin tells
+  you whether to rewrite a prompt, fix a retrieval index, or correct a tool
+  schema before you spend time on the wrong thing.
+- **Routing to Reflex** — when `fix_type="prompt"`, hand the attribution
+  directly to Reflex for automated prompt repair. Origin's `by_prompt()` gives
+  Reflex exactly the prompt-level view it needs.
+
+Works with any LLM — Claude, OpenAI, OpenRouter, local Ollama or vLLM, or any
+OpenAI-compatible endpoint.
 
 ## Install
 
@@ -48,10 +83,10 @@ Python 3.10+.
 | **Groq** | `[openai]` | `GROQ_API_KEY` |
 | **Ollama** | `[openai]` | — |
 
-## Quick start (turnkey)
+## Quick start
 
-Instrument your pipeline with `@span`, hand Origin a rubric and a judge,
-get back an attribution:
+Instrument your pipeline with `@span`, hand Origin a rubric and a judge, get
+back an attribution:
 
 ```python
 from aevyra_witness.runtime import span
@@ -86,12 +121,9 @@ result = diagnose_pipeline(
 print(result.render())
 ```
 
-`diagnose_pipeline` runs your pipeline under a tracer, scores the
-captured trace with your judge, and invokes the attribution engine —
-all in one call. You get back a ranked list of culprit spans with a
-`fix_type` for each. No known-good reference output is required.
-
-`result.render()` prints something like:
+`diagnose_pipeline` runs your pipeline under a tracer, scores the captured
+trace, and invokes the attribution engine — all in one call. `result.render()`
+prints something like:
 
 ```
 Origin attribution  (method=all, score=0.31)
@@ -116,45 +148,25 @@ Origin attribution  (method=all, score=0.31)
   prompt=answer_v1  [minor, confidence=0.18, spans=1]
 ```
 
-The `fix_type` tells you where to direct the repair effort — update the
-retrieval index, fix the routing classifier, or rewrite the prompt. Only
-spans with `fix_type="prompt"` are candidates for Reflex; the others
-need a different intervention.
+The `fix_type` tells you where to direct the repair effort. Only spans with
+`fix_type="prompt"` are candidates for Reflex; the others need a different
+intervention.
 
-Don't have a Verdict metric? Pass any `Callable[[AgentTrace], float]`
-as `judge=` — including a lambda that wraps your own evaluator.
-
-## What Origin diagnoses
-
-Not all agent failures are prompt failures. Origin classifies each culprit
-span into one of six fix types:
-
-| `fix_type` | What it means | Who fixes it |
-|---|---|---|
-| `prompt` | The instructions or context in the prompt need changing | Reflex |
-| `tool_schema` | The tool's input schema is ambiguous; the LLM called it wrong | Schema redesign |
-| `retrieval` | The retrieval step fetched wrong, irrelevant, or missing docs | Index / embedding fix |
-| `routing` | The pipeline sent the query down the wrong branch or tool | Routing logic fix |
-| `infrastructure` | A transient or systemic issue: timeout, rate limit, auth error | Ops / infra fix |
-| `unknown` | Origin could not determine the fix type | Manual review |
-
-This matters because Reflex can only help with `fix_type="prompt"`. When
-Origin tells you the problem is in the retrieval index or the tool schema,
-you know immediately where to look — and that rewriting the prompt won't
-help.
+Don't have a Verdict metric? Pass any `Callable[[AgentTrace], float]` as
+`judge=` — including a lambda that wraps your own evaluator.
 
 ## Three on-ramps
 
-The turnkey path is the recommended starting point, but Origin's
-attribution engine works with any trace you can produce:
+The turnkey path is the recommended starting point, but Origin's attribution
+engine works with any trace you can produce:
 
-1. **Turnkey** — give Origin your pipeline and it handles tracing +
-   scoring: `diagnose_pipeline(pipeline, input, judge, rubric, llm)`.
-   Your pipeline just needs `@span` decorators from
-   `aevyra_witness.runtime`.
-2. **Adapter** — if you already emit framework logs (OpenClaw JSONL
-   today; LangSmith, OTel, and others are additive), parse them into
-   an `AgentTrace` and hand it to Origin:
+1. **Turnkey** — give Origin your pipeline and it handles tracing + scoring:
+   `diagnose_pipeline(pipeline, input, judge, rubric, llm)`. Your pipeline
+   just needs `@span` decorators from `aevyra_witness.runtime`.
+
+2. **Adapter** — if you already emit framework logs (OpenClaw JSONL today;
+   LangSmith, OTel, and others are additive), parse them into an `AgentTrace`
+   and hand it to Origin:
 
     ```python
     from aevyra_witness.adapters import from_openclaw_jsonl
@@ -169,6 +181,73 @@ attribution engine works with any trace you can produce:
     origin = Origin(llm=anthropic_llm())
     result = origin.diagnose(trace=my_trace, score=0.4, rubric=...)
     ```
+
+## What Origin diagnoses
+
+Not all agent failures are prompt failures. Origin classifies each culprit span
+into one of six fix types:
+
+| `fix_type` | What it means | Who fixes it |
+|---|---|---|
+| `prompt` | The instructions or context in the prompt need changing | Reflex |
+| `tool_schema` | The tool's input schema is ambiguous; the LLM called it wrong | Schema redesign |
+| `retrieval` | The retrieval step fetched wrong, irrelevant, or missing docs | Index / embedding fix |
+| `routing` | The pipeline sent the query down the wrong branch or tool | Routing logic fix |
+| `infrastructure` | A transient or systemic issue: timeout, rate limit, auth error | Ops / infra fix |
+| `unknown` | Origin could not determine the fix type | Manual review |
+
+This matters because Reflex can only help with `fix_type="prompt"`. When Origin
+tells you the problem is in the retrieval index or the tool schema, you know
+immediately where to look — and that rewriting the prompt won't help.
+
+## Methods
+
+Origin ships three attribution methods that can be run individually or combined.
+
+**LLM-as-critic** (`method="critic"`) makes one LLM call. The LLM reads the
+rubric, score, and full trace, and returns a ranked list of culprit spans with
+severity, confidence, reasoning, and fix_type. Fast and general — works for any
+rubric. Best for single-cause failures.
+
+**Score decomposition** (`method="decomposition"`) also makes one LLM call, but
+approaches it differently. The LLM enumerates the rubric's underlying criteria,
+attributes each criterion to the span(s) responsible, and aggregates per-span
+blame across failed criteria. Better at surfacing distributed failures where
+multiple steps each contributed.
+
+**Ablation** (`method="ablation"`) is the causal method. For each candidate
+span, it replaces the span's output with a neutral placeholder, re-runs the
+pipeline via a user-supplied `runner`, and re-scores via the `judge`. It's the
+only method that makes a causal claim — a large score delta means the span is
+genuinely responsible. Requires a deterministic runner.
+
+**`method="all"`** runs all available methods and merges the results. The two
+LLM methods always run (two LLM calls total). Ablation participates when a
+`runner` is supplied; otherwise it's silently skipped. Spans flagged by multiple
+methods receive a corroboration bonus. `fix_type` is resolved to the most
+specific type across methods (`"retrieval"` wins over `"unknown"`).
+
+### Ablation quick start
+
+```python
+from aevyra_origin import diagnose_pipeline
+from aevyra_witness import AgentTrace
+
+def my_runner(trace: AgentTrace, overrides: dict) -> AgentTrace:
+    # Replay the pipeline with overrides[span_id] forced as the output.
+    # LLM calls should be cached or mocked for determinism.
+    ...
+
+result = diagnose_pipeline(
+    my_agent, "how do I refund?",
+    judge=judge, rubric=rubric, llm=anthropic_llm(),
+    runner=my_runner,
+    method="all",
+)
+```
+
+Ablation cost control: `ablation_budget=N` caps total runs. The raw on-ramp
+exposes `candidates=["span_a", "span_b"]` to limit the sweep to specific span ids.
 
 ## API
 
@@ -234,11 +313,10 @@ c.fix_type                  # "prompt" | "tool_schema" | "retrieval" | "routing"
 
 ### `Attribution.by_prompt()` → `list[PromptAttribution]`
 
-For DAG traces where the same prompt fires at many call sites (a planner at
-step 1, step 2, step 3, ...), Reflex needs to know which *prompt* to update.
-`by_prompt()` rolls span-level blame up to the prompt level — mean confidence
-across spans sharing a `prompt_id`, max severity, concatenated reasoning.
-Only culprits with `fix_type="prompt"` are meaningful inputs to Reflex.
+For DAG traces where the same prompt fires at many call sites, `by_prompt()`
+rolls span-level blame up to the prompt level — mean confidence across spans
+sharing a `prompt_id`, max severity, concatenated reasoning. Only culprits with
+`fix_type="prompt"` are meaningful inputs to Reflex.
 
 ```python
 for pa in result.by_prompt():
@@ -259,8 +337,7 @@ judge = judge_from_verdict(LLMJudge(judge_provider=provider))
 ```
 
 Customize what gets fed to the metric with `extract_response=...` and
-`extract_messages=...` when the defaults (last root span's output, first
-root span's input as user message) aren't right for your pipeline.
+`extract_messages=...` when the defaults aren't right for your pipeline.
 
 ## CLI
 
@@ -277,49 +354,14 @@ aevyra-origin diagnose trace.json \
 
 `--rubric -` reads from stdin. `--model` follows the same `provider/model`
 convention as aevyra-reflex — `openrouter/qwen/qwen3-8b`, `openai/gpt-4o`,
-`ollama/qwen3:8b`. The render (including prompt-level rollup for Reflex)
-always goes to stdout.
-
-## Methods
-
-Origin ships with three attribution methods.
-
-**LLM-as-critic** (`method="critic"`) makes one LLM call. The LLM reads the rubric, score, and full trace, and returns a ranked list of culprit spans with severity, confidence, reasoning, and fix_type. Fast and general — works for any rubric. Best for single-cause failures.
-
-**Score decomposition** (`method="decomposition"`) also makes one LLM call, but approaches it differently. The LLM enumerates the rubric's underlying criteria, attributes each criterion to the span(s) responsible, and aggregates per-span blame across failed criteria. Better at surfacing distributed failures where multiple steps each contributed. fix_type is determined by majority vote across criteria.
-
-**Ablation** (`method="ablation"`) is the causal method. For each candidate span, it replaces the span's output with a neutral placeholder, re-runs the pipeline via a user-supplied `runner`, and re-scores via the `judge`. It's the only method that makes a causal claim — a large score delta means the span is genuinely responsible, not just suspicious-looking. Requires a deterministic runner.
-
-**`method="all"`** runs all available methods and merges the results. The two LLM methods always run (two LLM calls total). Ablation participates when a `runner` is supplied; otherwise it's silently skipped. Spans flagged by multiple methods receive a corroboration bonus — if both independently point at the same span, confidence rises. fix_type is resolved to the most specific type across methods (e.g. `"retrieval"` wins over `"unknown"`).
-
-### Ablation quick start
-
-```python
-from aevyra_origin import diagnose_pipeline
-from aevyra_witness import AgentTrace
-
-def my_runner(trace: AgentTrace, overrides: dict) -> AgentTrace:
-    # Replay the pipeline with overrides[span_id] forced as the output for that span.
-    # LLM calls should be cached or mocked for determinism.
-    ...
-
-result = diagnose_pipeline(
-    my_agent, "how do I refund?",
-    judge=judge, rubric=rubric, llm=anthropic_llm(),
-    runner=my_runner,
-    method="all",
-)
-```
-
-Ablation cost control: `ablation_budget=N` caps total runs. The raw on-ramp
-exposes `candidates=["span_a", "span_b"]` to limit the sweep to specific
-span ids.
+`ollama/qwen3:8b`. The render (including prompt-level rollup for Reflex) always
+goes to stdout.
 
 ## Interop with Reflex
 
-`by_prompt()` on the result gives Reflex the prompt-level view it needs.
-Only culprits with `fix_type="prompt"` are handed to Reflex — the others
-(retrieval, routing, infrastructure, tool_schema) need a different repair.
+`by_prompt()` on the result gives Reflex the prompt-level view it needs. Only
+culprits with `fix_type="prompt"` are handed to Reflex — the others (retrieval,
+routing, infrastructure, tool_schema) need a different repair.
 
 ```python
 # What Reflex consumes:
