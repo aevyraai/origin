@@ -472,6 +472,7 @@ _SEVERITY_RANK = {"primary": 3, "contributing": 2, "minor": 1}
 def _print_per_method_scores(per_method: dict[str, list[NodeAttribution]]) -> None:
     """Print each method's culprit list and confidence scores to stderr."""
     import sys
+
     sys.stderr.write("\n  ── Per-method confidence scores ──\n")
     for method, culprits in per_method.items():
         if not culprits:
@@ -480,21 +481,18 @@ def _print_per_method_scores(per_method: dict[str, list[NodeAttribution]]) -> No
         sys.stderr.write(f"  {method}:\n")
         for c in culprits:
             span_label = f"{c.node_name}" + (f" ({c.node_id})" if c.node_id else "")
-            sys.stderr.write(
-                f"    {span_label:<30}  conf={c.confidence:.2f}  sev={c.severity}\n"
-            )
+            sys.stderr.write(f"    {span_label:<30}  conf={c.confidence:.2f}  sev={c.severity}\n")
     sys.stderr.write("\n")
 
 
 def _print_merged_scores(merged: list[NodeAttribution]) -> None:
     """Print the final merged confidence scores to stderr."""
     import sys
+
     sys.stderr.write("  ── Merged confidence scores ──\n")
     for c in merged:
         span_label = f"{c.node_name}" + (f" ({c.node_id})" if c.node_id else "")
-        sys.stderr.write(
-            f"    {span_label:<30}  conf={c.confidence:.2f}  sev={c.severity}\n"
-        )
+        sys.stderr.write(f"    {span_label:<30}  conf={c.confidence:.2f}  sev={c.severity}\n")
     sys.stderr.write("\n")
 
 
