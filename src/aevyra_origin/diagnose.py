@@ -386,6 +386,7 @@ class Origin:
             completed.add("critic")
             _save_checkpoint()
             _emit(f"critic: done ({len(critic_out['culprits'])} culprit(s))")
+            _print_per_method_scores({"critic": critic_out["culprits"]})
         else:
             critic_out = method_outputs["critic"]
             logger.info("diagnose: skipping critic (already completed in checkpoint)")
@@ -399,6 +400,7 @@ class Origin:
             completed.add("decomposition")
             _save_checkpoint()
             _emit(f"decomposition: done ({len(decomp_out['culprits'])} culprit(s))")
+            _print_per_method_scores({"decomposition": decomp_out["culprits"]})
         else:
             decomp_out = method_outputs["decomposition"]
             logger.info("diagnose: skipping decomposition (already completed in checkpoint)")
@@ -432,6 +434,7 @@ class Origin:
                 completed.add("ablation")
                 _save_checkpoint()
                 _emit(f"ablation: done ({len(ablation_out['culprits'])} culprit(s))")
+                _print_per_method_scores({"ablation": ablation_out["culprits"]})
             else:
                 ablation_out = method_outputs["ablation"]
                 logger.info("diagnose: skipping ablation (already completed in checkpoint)")
@@ -443,6 +446,7 @@ class Origin:
         _emit("merging results ...")
         raw: dict[str, Any] = {k: method_outputs[k] for k in method_outputs}
         merged = _merge(per_method_culprits, trace)
+        _print_merged_scores(merged)
         summary = _merge_summaries(per_method_summaries)
         result = Attribution(
             summary=summary,
@@ -463,6 +467,33 @@ class Origin:
 # ---------------------------------------------------------------------------
 
 _SEVERITY_RANK = {"primary": 3, "contributing": 2, "minor": 1}
+
+
+def _print_per_method_scores(per_method: dict[str, list[NodeAttribution]]) -> None:
+    """Print each method's culprit list and confidence scores to stderr."""
+    import sys
+
+    sys.stderr.write("\n  ── Per-method confidence scores ──\n")
+    for method, culprits in per_method.items():
+        if not culprits:
+            sys.stderr.write(f"  {method:<16} (no culprits)\n")
+            continue
+        sys.stderr.write(f"  {method}:\n")
+        for c in culprits:
+            span_label = f"{c.node_name}" + (f" ({c.node_id})" if c.node_id else "")
+            sys.stderr.write(f"    {span_label:<30}  conf={c.confidence:.2f}  sev={c.severity}\n")
+    sys.stderr.write("\n")
+
+
+def _print_merged_scores(merged: list[NodeAttribution]) -> None:
+    """Print the final merged confidence scores to stderr."""
+    import sys
+
+    sys.stderr.write("  ── Merged confidence scores ──\n")
+    for c in merged:
+        span_label = f"{c.node_name}" + (f" ({c.node_id})" if c.node_id else "")
+        sys.stderr.write(f"    {span_label:<30}  conf={c.confidence:.2f}  sev={c.severity}\n")
+    sys.stderr.write("\n")
 
 
 def _merge(
