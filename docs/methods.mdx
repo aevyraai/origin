@@ -8,9 +8,14 @@ combine them with `method="all"` (the default).
 
 ## LLM-as-critic (`method="critic"`)
 
-**One LLM call.** The critic reads the rubric, the judge score, an optional
-ideal output, and the full execution trace, then returns a ranked list of
-culprit spans with severity, confidence, reasoning, and `fix_type`.
+**One LLM call.** Origin sends the full execution trace, the rubric, and the
+judge score to an LLM and asks: *"given that this pipeline scored poorly, which
+span is most responsible and why?"* The LLM reads the trace holistically — the
+way a senior engineer would scan logs — and returns a ranked list of culprit
+spans, each with a severity, confidence score, explanation, and `fix_type`.
+
+Think of it as asking a colleague to eyeball the trace and point at what looks
+wrong. It's fast and works well when one span clearly dominates the failure.
 
 **Best for:** fast diagnosis, single-cause failures, and traces where one span
 clearly dominates the failure.
@@ -25,11 +30,18 @@ result = origin.diagnose(trace=trace, score=0.2, rubric=rubric, method="critic")
 
 ## Score decomposition (`method="decomposition"`)
 
-**One LLM call.** The decomposer enumerates the rubric's underlying criteria
-(e.g. "acknowledged the charge", "cited the policy", "confirmed the refund"),
-attributes each criterion to the span(s) responsible, and aggregates per-span
-blame across all failed criteria. `fix_type` is determined by majority vote
-across the criteria a span is responsible for.
+**One LLM call.** Instead of looking at the trace holistically, decomposition
+first breaks the rubric into its individual pass/fail criteria, then asks which
+span is responsible for each criterion that failed.
+
+For example, a rubric like *"the agent should acknowledge the charge, cite the
+refund policy, and confirm the refund"* gets split into three separate
+questions. For each failed criterion, the LLM identifies the responsible span.
+Blame is then aggregated per span across all the criteria it failed.
+
+This gives you a more structured view: you can see not just *which span* failed,
+but *which requirement* it failed and why — useful when a failure has multiple
+contributing factors.
 
 **Best for:** rubrics that bundle multiple requirements, distributed failures
 where two or three spans each contributed, and cases where you want a richer
@@ -69,6 +81,41 @@ result = origin.diagnose(
 )
 ```
 
+### How ablation confidence is calculated
+
+When a span is ablated, Origin runs the pipeline and asks the judge to score
+the result. Confidence is the normalized score drop:
+
+```
+ablation_confidence = (score_original - score_ablated) / score_range
+```
+
+`score_range` is `score_max - score_min` (typically `1.0 - 0.0 = 1.0`). A span
+that drops the score from `1.0` to `0.0` gets confidence `1.0`; a span that
+changes nothing gets `0.0`.
+
+**Neutral placeholders by output type.** The ablated output must be
+structurally valid so the rest of the pipeline doesn't crash:
+
+| Span output type | Placeholder |
+|---|---|
+| `dict` | `{}` |
+| `list` | `[]` |
+| `str` | `""` |
+
+**Judge scoring tiers.** Deterministic judges often return one of a small set of
+scores based on observable facts rather than LLM opinion. In the coding agent
+example the judge uses three tiers:
+
+| Result | Score | Meaning |
+|---|---|---|
+| All tests pass | `1.0` | Fully correct |
+| Compiles but tests fail | `0.4` | Partial credit |
+| Compile error | `0.0` | Broken output |
+
+With `score_original = 0.4` and `score_ablated = 0.0`, ablation confidence is
+`(0.4 - 0.0) / 1.0 = 0.40`.
+
 ### Ablation cost control
 
 ```python
@@ -99,6 +146,52 @@ Results are merged per span:
   priority ordering: `prompt` > `tool_schema` > `retrieval` > `routing` >
   `infrastructure` > `unknown`. If critic says `retrieval` and decomposition
   says `unknown`, the merged fix_type is `retrieval`.
+
+### Corroboration formula
+
+Let `confidences` be the list of per-method confidence scores for a span. The
+merged confidence is:
+
+```
+weight  = 1.0 - 1.0 / len(confidences)
+avg     = mean(confidences)
+peak    = max(confidences)
+merged  = avg + (peak - avg) * weight
+```
+
+`weight` scales with the number of agreeing methods:
+
+| Methods that named the span | Weight | Effect |
+|---|---|---|
+| 1 | 0.00 | merged = avg (no bonus — only one signal) |
+| 2 | 0.50 | merged halfway between avg and peak |
+| 3 | 0.67 | merged pulled strongly toward the peak |
+
+The more methods agree, the closer the merged score is to the highest individual
+confidence. A span that only one method flags gets no bonus at all.
+
+### Worked example
+
+In the coding agent tutorial, the planner span receives these per-method scores:
+
+| Method | Confidence | How it was derived |
+|---|---|---|
+| Critic | 0.95 | LLM judged the planner as the most suspicious span |
+| Decomposition | 0.28 | Partial blame — planner contributed to one failed criterion |
+| Ablation | 0.40 | Score dropped from 0.4 → 0.0 when planner output was ablated |
+
+Applying the formula with N=3 methods:
+
+```
+weight  = 1.0 - 1.0 / 3  = 0.667
+avg     = (0.95 + 0.28 + 0.40) / 3  = 0.543
+peak    = 0.95
+merged  = 0.543 + (0.95 - 0.543) × 0.667  = 0.543 + 0.271  = 0.814
+```
+
+The planner ends up with `confidence=0.81`. Three independent methods all
+flagged it, so the corroboration bonus pulled the merged score well above the
+average of the individual confidences.
 
 ```python
 result = diagnose_pipeline(
